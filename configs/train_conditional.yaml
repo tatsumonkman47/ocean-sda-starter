@@ -1,0 +1,26 @@
+# ════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: conditional joint SSH + SST model (M_3 / M_4), fine-tuned from
+# the released unconditional prior. Experimental: implemented and
+# smoke-tested, not evaluated.
+#
+# Inherits every option from configs/train_base.yaml; only the keys below
+# change. Use with:
+#   python scripts/train.py config=configs/train_conditional.yaml \
+#       data_dir=... init_from=checkpoints/joint_ssh_sst_T5.pt
+# See train_base.yaml and docs/06_conditional_models.md.
+# ════════════════════════════════════════════════════════════════════════════
+
+experiment_name: conditional_ssh_sst
+conditioning:
+  mode: observations
+  observe: [SSH, SST]
+  mask_channel: true
+  training_observations:
+    masks: stripes              # band-like coverage, closer to swaths than random cells
+    coverage: {SSH: 0.1, SST: 0.3}         # bernoulli only
+    stripe_width: {SSH: 30, SST: 60}       # grid cells
+    stripes_per_frame: {SSH: 1, SST: 2}
+    noise_std: {SSH: 0.005, SST: 0.1}      # m, degC
+    null_probability: 0.1       # 10% "nothing observed" samples, so CFG (M_4) also works
+lr_rampup_steps: 1000           # short warm-up when fine-tuning
+num_steps: 50000

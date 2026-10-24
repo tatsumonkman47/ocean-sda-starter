@@ -1,0 +1,241 @@
+# ════════════════════════════════════════════════════════════════════════════
+# BASE TRAINING CONFIG: every option and its default.
+#
+# scripts/train.py always loads this file first. Then, in order, later
+# sources override earlier ones:
+#   1. this file (configs/train_base.yaml)
+#   2. an optional experiment file:   config=configs/train_ssh_only.yaml
+#   3. command-line overrides:        num_steps=1000 batch_size=8
+#                                     variables.0.normalization.scale=0.05
+# Experiment files only list what they change; everything else comes from
+# here. Options not defined here are rejected (catches typos), and the whole
+# config is checked before any data is read. The fully merged config is
+# written to <output_dir>/config.yaml and saved inside every checkpoint, so
+# a model can always be rebuilt and its data normalized exactly as in
+# training.
+#
+# These defaults reproduce the released joint SSH + SST model
+# (checkpoints/joint_ssh_sst_T5.pt), apart from batch size, and need real
+# data (data_dir). For a quick code check use configs/train_smoke_test.yaml;
+# for a small model on structured synthetic data, configs/train_structured.yaml.
+#
+# Each comment says what an option does; "(released)" marks values kept to
+# match the released checkpoints rather than because they are known to be
+# best for new data.
+# ════════════════════════════════════════════════════════════════════════════
+
+config_version: 2               # config format; older checkpoint configs are translated
+experiment_name: joint_ssh_sst  # a label; also names the output directory below
+output_dir: runs/${experiment_name}   # checkpoints/ and config.yaml go here
+seed: 42                        # random seed (initial weights, data draws, noise levels)
+
+# ── How the run starts ─────────────────────────────────────────────────────
+start: fresh                    # fresh: a new run; fails if output_dir already has one
+                                # resume: continue output_dir's run (or resume_from);
+                                #   fails if a setting that changes what the run
+                                #   learns differs from the run's own config
+                                # auto: resume if a checkpoint exists, else fresh
+                                #   (for requeued jobs)
+resume_from: null               # resume/auto: this checkpoint instead of
+                                #   output_dir/checkpoints/checkpoint_latest.pt
+init_from: null                 # fresh only: start from another checkpoint's weights
+                                #   (e.g. a released prior) with a fresh optimizer. Its
+                                #   variables, normalization and network must match;
+                                #   new observation input channels start at zero, so
+                                #   the model initially behaves like the original
+
+# ── Data ───────────────────────────────────────────────────────────────────
+# What the model learns from. A training sample is a short movie: a
+# time_length-frame sequence of an H x W patch, one channel per variable.
+data_source: patches            # patches: per-patch zarr stores under data_dir
+                                # structured: generated smooth drifting fields
+                                #   (settings under structured: below); no files needed
+                                # synthetic: white noise, only checks the code runs
+data_dir: null                  # patches: {data_dir}/{field}/{patch_id}.zarr
+                                #   (README, "Data layout")
+patch_ids: null                 # restrict to these patch ids; null = every patch found
+time_range_start: 48            # only draw frames from hourly indices [start, end):
+time_range_end: 9000            #   lets you hold out the start/end of the record
+
+# ── Variables ──────────────────────────────────────────────────────────────
+# One entry per model channel, in channel order. The channel count, the
+# order, where each variable is read from and how it is normalized all come
+# from this list. The network works best on fields of order one, so each
+# variable is mapped to "model units":
+#     x_model = (x - climatology(t) - offset) / scale
+# These settings travel with the checkpoint, and inference reuses them
+# (README, "Units and normalization"; src/obottle_starter/core/normalization.py).
+# An experiment file that changes the variables lists all of them (lists
+# are replaced, not merged).
+variables:
+  - name: SSH                   # short name used everywhere (sigma_y, masks, output)
+    field: FULL_PACIFIC_zarr_llc4320_SSH_minus_300km_filtered_fullt  # directory under data_dir
+    source_variable: null       # data variable in each store; null = the store's only one
+    units: m
+    preprocessing: llc4320 SSH with scales longer than 300 km removed (spatial high-pass)
+    normalization:
+      scale: 0.051              # m per model unit; typical SSH amplitude after the high-pass
+      offset: 0.0
+      climatology: null
+  - name: SST
+    field: FULL_PACIFIC_zarr_llc4320_SST_tiles_4km_unfiltered_fullt
+    source_variable: null
+    units: degC
+    preprocessing: llc4320 SST, unfiltered
+    normalization:
+      scale: 5.5                # degC per model unit; typical deviation from the climatology
+      offset: 0.0               # extra constant removed after the climatology
+      climatology:              # a daily North Pacific basin-mean SST time series (released)
+        path: null              # null = data/SST_NP_daily_climatology.nc in this repository
+        variable: SST           # data variable in that file
+        lookup: elapsed_days    # elapsed_days: whole days since the file's first day,
+                                #   as the released models were trained. Only valid
+                                #   inside the file's dates (2011-09-13 to 2012-09-23).
+                                # day_of_year: same calendar day in any year; use this
+                                #   for new models that should work in other years
+        out_of_range: error     # elapsed_days only: error | clip (first/last day)
+        sha256: null            # filled in when training starts; checked when loaded
+
+# ── Frame timing ───────────────────────────────────────────────────────────
+# How far apart in time the frames of a training sample are. Varying the
+# spacing teaches the model how fields evolve over hours to weeks, so at
+# inference you can give it any (increasing) frame times in that range.
+time_sampling_mode: nonuniform_offsets
+#   nonuniform_offsets: random offsets on a regular grid. A maximum span is
+#     drawn uniformly, then the other frames are scattered inside it, so
+#     the actual first-to-last span is usually shorter (docs/03_data_loading.md).
+#   uniform_stride: equally spaced frames, stride drawn from llc_dtime_choices.
+nonuniform_minimum_offset_hours: 1   # grid spacing for offsets (hours)
+nonuniform_max_span_hours: 336       # largest drawn span, an upper bound on the
+                                     #   first-to-last span (hours; 336 h = 14 days)
+llc_dtime_choices: [12]              # uniform_stride only: candidate strides (hours)
+
+# ── Network: EDMPrecond(SongUNet) ──────────────────────────────────────────
+# A U-Net: it repeatedly halves the grid (128 -> 64 -> 32 -> 16) while
+# adding features, then builds the image back up, with skip connections
+# between matching sizes. It sees all frames at once. Ordinary layers act
+# on each frame's 2-D grid, and "temporal attention" layers let each grid
+# point compare its frames with one another. Training prints the levels,
+# widths and attention placement these settings produce.
+H: 128                          # patch height in grid cells (128 x 4 km = 512 km)
+W: 128                          # patch width; must equal H (square levels), and both
+                                #   must be divisible by 2^(len(channel_mult) - 1)
+time_length: 5                  # frames per sample. Fixed per model: a 5-frame
+                                #   model always assimilates 5 frames at a time.
+model_channels: 96              # feature channels at full resolution. The main
+                                #   size knob: parameters grow roughly with its square.
+channel_mult: [1, 2, 2, 2]      # feature multiplier at each resolution level; one
+                                #   entry per level (here 128, 64, 32, 16 cells),
+                                #   so channels are 96, 192, 192, 192
+num_blocks: 2                   # residual blocks per level (depth)
+attn_resolutions: [16]          # grid sizes with spatial self-attention, so each
+                                #   point can see the whole patch. Costly at large sizes.
+                                #   Sizes, not level numbers: update when H changes.
+temporal_attn_resolutions: [16, 32]  # grid sizes with temporal attention in the encoder
+decoder_start_temporal_attn: true    # temporal attention at the bottom of the U-Net too
+upsample_temporal_attn: true         # ... and in each upsampling block of the decoder
+use_per_frame_adagn: true       # add an embedding of each frame's time offset to the
+                                #   noise-level embedding every block receives (released)
+per_frame_adaptive_scale: false # with use_per_frame_adagn: apply that embedding as a
+                                #   scale and shift after normalization ("AdaGN")
+                                #   instead of a shift before it (released: false).
+                                #   Changes parameter shapes: new models only.
+calendar_embed_channels: 8      # day-of-year and local time-of-day features
+                                #   (seasonal and diurnal cycles); 0 = off
+temporal_offset_channels: 32    # sinusoidal encodings of each frame's offset (hours)
+                                #   added as extra input channels; must be even
+label_dim: 8                    # size of a global label vector. No labels are used
+                                #   (always zero), so this is only a learned constant;
+                                #   kept so the released checkpoints load (released).
+                                #   New models without labels can use 0.
+label_dropout: 0.1              # chance of zeroing that label vector in training
+                                #   (released). Unrelated to observation-condition
+                                #   dropout for CFG, which is
+                                #   conditioning.training_observations.null_probability
+span_label_channels: 0          # optional label encoding the window's total span; 0 = off
+dropout: 0.0                    # dropout inside residual blocks (regularization)
+mixing_type: spatial            # apply layers on each frame's 2-D grid; must be "spatial"
+condition_channels: 0           # legacy key, keep 0; observation inputs are set below
+
+# ── Conditioning on observations (experimental) ────────────────────────────
+# By default the model is an unconditional prior: it never sees observations,
+# and SDA brings them in at inference (docs/04_inference_sda.md). A
+# *conditional* model instead takes observations as extra input channels and
+# learns to approximate p(state | observations) directly ("M_3" in Suresh
+# Babu et al. 2026; with null_probability > 0 it also supports
+# classifier-free guidance, "M_4"). It only learns the observing system it is
+# trained with, set by training_observations. See
+# docs/06_conditional_models.md. Implemented and smoke-tested, not yet
+# evaluated on real data.
+conditioning:
+  mode: none                    # none | observations
+  observe: null                 # variables whose observations are inputs; null = all
+  mask_channel: true            # also input a 0/1 "observed here" map per observed variable
+  training_observations:        # synthetic observations drawn fresh for every sample.
+                                #   Each value is a number for every observed variable,
+                                #   or a map per variable, e.g. coverage: {SSH: 0.1, SST: 0.3}
+    masks: bernoulli            # bernoulli (random cells) | stripes (random straight bands)
+    coverage: 0.1               # bernoulli: fraction of cells observed
+    stripe_width: 30            # stripes: band width in grid cells
+    stripes_per_frame: 1        # stripes: bands per frame
+    frame_probability: 1.0      # chance a variable is observed at all in a given frame
+    noise_std: 0.0              # observation noise std, physical units of each variable
+    null_probability: 0.0       # chance the whole observation condition is replaced by
+                                #   "nothing observed"; > 0 (e.g. 0.1) trains the null
+                                #   branch that CFG sampling (M_4) needs
+
+# ── Diffusion ──────────────────────────────────────────────────────────────
+# Training adds Gaussian noise of a random strength sigma to a clean sample
+# and teaches the network to remove it. Sampling starts from pure noise at
+# sigma_max and removes it step by step down to sigma_min. The values below
+# reproduce the released training setup; they are a reference, not a
+# setting known to be best for every dataset.
+sigma_data: 1.0                 # expected std of the normalized data; sets the
+                                #   network's input/output scaling (EDM preconditioning)
+sigma_min: 0.0002               # smallest noise level (model units)
+sigma_max: 200.0                # largest noise level, far above the unit-variance signal
+noise_distribution: log_uniform # how training noise levels are drawn:
+                                #   log_uniform (released): ln(sigma) uniform between
+                                #     ln(sigma_min) and ln(sigma_max), so every decade
+                                #     of sigma gets the same number of samples
+                                #   log_normal: ln(sigma) ~ Normal(p_mean, p_std^2),
+                                #     EDM's choice; concentrates training around
+                                #     sigma = exp(p_mean) and is not clipped to
+                                #     [sigma_min, sigma_max]
+                                #   power: the rho = 7 schedule EDM samples with
+p_mean: -1.2                    # log_normal only: centre of ln(sigma) (exp(-1.2) = 0.3)
+p_std: 1.2                      # log_normal only: spread of ln(sigma)
+
+# ── Generated data (data_source: structured) ───────────────────────────────
+structured:
+  spectral_slope: 3.0           # power spectrum ~ k^-slope; larger = smoother fields
+  correlation: 0.8              # correlation of every later variable with the first
+  speed_cells_per_day: 2.0      # all fields drift together at this speed, in a
+                                #   random direction per sample
+
+# ── Optimization ───────────────────────────────────────────────────────────
+batch_size: 32                  # samples per step, per GPU. The released models used
+                                #   130 (joint) and 60 (SSH-only) on one H200 GPU.
+num_workers: 8                  # data-loading processes per GPU
+lr: 0.0002                      # learning rate (Adam) after warm-up
+lr_min: 0.000001                # learning rate at step 0
+lr_rampup_steps: 5000           # linear warm-up from lr_min to lr over this many steps
+ema_decay: 0.999                # the saved weights are an exponential moving average
+                                #   of training weights over ~1/(1-decay) = 1000 steps.
+                                #   Per step, so its horizon in samples grows with
+                                #   batch_size and the number of GPUs (printed at start)
+num_steps: 300000               # total optimizer steps
+log_every: 50                   # print loss every N steps
+checkpoint_every: 5000          # save a checkpoint every N steps
+
+# ── Validation ─────────────────────────────────────────────────────────────
+# A fixed set of held-out windows, denoised at fixed noise levels with fixed
+# noise by the EMA weights, so values at different steps are comparable.
+# Printed and appended to <output_dir>/validation.csv, per variable.
+validation:
+  every: 0                      # steps between validation passes; 0 = off
+  n_samples: 32                 # held-out windows, drawn once
+  sigmas: [0.01, 0.1, 1.0, 10.0]  # noise levels (model units) to report
+  time_range_start: null        # patches: held-out hourly indices [start, end). Must
+  time_range_end: null          #   not overlap the training hours, with a gap of at
+                                #   least nonuniform_max_span_hours

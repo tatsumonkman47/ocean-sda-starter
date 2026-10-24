@@ -1,0 +1,24 @@
+# ════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: smoke test. Checks that the code runs (a few minutes on a CPU,
+# seconds on a GPU); it does not train anything meaningful.
+#
+# Inherits every option from configs/train_base.yaml; only the keys below
+# change. Trains a tiny network on white noise (data_source: synthetic).
+#   python scripts/train.py config=configs/train_smoke_test.yaml
+# See train_base.yaml for what each option means.
+# ════════════════════════════════════════════════════════════════════════════
+
+experiment_name: smoke_test
+data_source: synthetic          # white noise: no data needed, nothing to learn
+H: 32                           # 32 x 32 patches
+W: 32
+model_channels: 32              # a much smaller network
+channel_mult: [1, 2]            # two levels: 32 and 16 cells
+attn_resolutions: []            # no spatial attention
+temporal_attn_resolutions: [16]
+batch_size: 4
+num_workers: 0                  # load data in the main process
+num_steps: 20
+log_every: 5
+checkpoint_every: 20
+lr_rampup_steps: 0              # no warm-up

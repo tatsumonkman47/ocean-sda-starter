@@ -1,0 +1,85 @@
+# ════════════════════════════════════════════════════════════════════════════
+# BASE SDA CONFIG: every option of scripts/run_sda.py and its default.
+#
+# run_sda.py loads this file, then an optional config=<file> with your own
+# changes, then command-line overrides, e.g.
+#   python scripts/run_sda.py ckpt=checkpoints/joint_ssh_sst_T5.pt \
+#       tile=osse_tiles/MidAtlantic_35N_50W.nc output=out.nc window.t_start=4
+# The network, its variables, frame count and normalization come from the
+# checkpoint, not from here. The merged config is saved in the output file.
+# The sampler, mmps, rozet and classifier_free values are also the defaults
+# of the Python API (obottle_starter.inference.sda.defaults); a test keeps
+# the two identical. They are starting points: check that results stop
+# changing when you increase steps or mmps.iterations.
+# ════════════════════════════════════════════════════════════════════════════
+
+ckpt: ???                       # checkpoint .pt
+tile: ???                       # OSSE tile .nc
+output: ???                     # output .nc
+device: cuda
+
+# How physical units (m, degC) map to model units. The model only makes
+# sense with the normalization it was trained with, which every checkpoint
+# stores; run_sda.py prints it at startup and records it in the output.
+normalization:
+  source: from_checkpoint       # from_checkpoint | config
+  climatology:                  # adjust the checkpoint's climatology (null = keep)
+    path: null                  #   another location of the same file (its sha256 is
+                                #   checked when the checkpoint recorded one)
+    lookup: null                #   elapsed_days | day_of_year; changing it is reported
+    out_of_range: null          #   error | clip (elapsed_days only)
+  variables: null               # source=config only (experiments): a variables list in
+                                #   the training format replacing the normalization;
+                                #   differences from training are reported
+
+window:
+  t_start: 0                    # first tile frame (tiles are 12-hourly, 24 frames)
+  stride: 1                     # use every stride-th tile frame
+  origin: null                  # [row, col] of the window corner; null = centred
+
+# An OSSE: the observed values always come from the tile's simulated truth
+# (plus instrument noise). Only where they are observed changes.
+observations:
+  mode: instrument              # instrument: real SWOT+nadir (SSH) and ACSPO (SST)
+                                #   coverage masks from 2023-2025, applied to the
+                                #   simulated truth
+                                # random: independent Bernoulli masks (random_coverage)
+                                # none: no observations (prior samples)
+  observe: null                 # variables to observe, e.g. [SSH]; null = all model variables
+  random_coverage: {SSH: 0.05, SST: 0.3}
+  sigma_y: {SSH: 0.005, SST: 0.1}   # assumed obs-error std in physical units (m, degC)
+  instrument_noise: true        # add N(0, sigma_y^2) noise to the synthetic obs
+  seed: 0
+
+sampler:
+  n_members: 8
+  n_batch: 4                    # members per GPU batch
+  steps: 64                     # DDIM steps (a starting point; check convergence)
+  timestep_spacing: log_sigma   # log_sigma | karras
+  seed: 0
+
+# How observations steer sampling (docs/04_inference_sda.md).
+guidance:
+  method: mmps                  # mmps: moment-matched posterior guidance using the
+                                #   denoiser's Jacobian, solved iteratively
+                                # rozet: Rozet & Louppe (2023), fixed variance gamma*sigma_t^2
+                                # conditional models only (docs/06_conditional_models.md):
+                                #   conditional: observations enter only as network inputs (M_3)
+                                #   cfg: classifier-free guidance (M_4), see classifier_free
+                                # With a conditional model, mmps and rozet use the same
+                                # observations twice (inputs and guidance): an
+                                # unvalidated experiment, not a standard route
+  record_diagnostics: false     # save per-step misfits (and solver residuals for mmps)
+
+mmps:                           # used when guidance.method = mmps
+  solver: gmres                 # gmres | cg | minres
+  iterations: 4                 # Krylov iterations (network backwards) per step
+
+rozet:                          # used when guidance.method = rozet
+  gamma: 0.01                   # likelihood variance = sigma_y^2 + gamma * sigma_t^2
+                                #   (model units). Smaller = stronger guidance at every
+                                #   step. 0.01 is Rozet & Louppe's default, not tuned here.
+
+classifier_free:                # used when guidance.method = cfg
+  weight: 1.5                   # w: 1 = plain conditional model; > 1 pushes harder
+                                #   towards the observations (2 network calls per step)

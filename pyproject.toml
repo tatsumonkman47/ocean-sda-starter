@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obottle-starter"
+version = "0.1.0"
+description = "Ocean diffusion priors (SongUNet) and score-based data assimilation for SSH/SST"
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+    "scipy",
+    "einops",
+    "xarray",
+    "netCDF4",
+    "zarr",
+    "omegaconf",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+examples = ["matplotlib", "jupyter"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["src/obottle_starter/core/nn", "src/obottle_starter/inference/sda/_azula"]

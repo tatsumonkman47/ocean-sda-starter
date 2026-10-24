@@ -1,0 +1,43 @@
+# ════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: a small model on structured synthetic data, for learning the
+# workflow without the data bundle.
+#
+# The data are smooth random fields that drift across a 32 x 32 patch (see
+# structured: in train_base.yaml and training/data.py, structured_fields).
+# Variable B has correlation 0.8 with A at every scale, so a joint model can
+# be checked on whether observing A informs B. Everything about the data is
+# known exactly: unit variance, the spectrum, the drift, the correlation.
+#   python scripts/train.py config=configs/train_structured.yaml
+# A few thousand steps on one GPU give recognisable samples; a CPU run of
+# the default length is slow. See train_base.yaml for each option.
+# ════════════════════════════════════════════════════════════════════════════
+
+experiment_name: structured
+data_source: structured
+variables:                      # generated in model units: physical = scale * x
+  - name: A
+    units: "1"
+    normalization: {scale: 1.0, offset: 0.0, climatology: null}
+  - name: B
+    units: "1"
+    normalization: {scale: 1.0, offset: 0.0, climatology: null}
+H: 32
+W: 32
+time_length: 4
+model_channels: 32
+channel_mult: [1, 2, 2]         # levels at 32, 16 and 8 cells
+attn_resolutions: [8]
+temporal_attn_resolutions: [8, 16]
+calendar_embed_channels: 0      # generated fields have no seasons or days
+label_dim: 0                    # no global labels
+label_dropout: 0.0
+nonuniform_max_span_hours: 96   # 4 days: features drift up to 8 cells
+batch_size: 16
+num_workers: 2
+num_steps: 5000
+log_every: 100
+checkpoint_every: 1000
+lr_rampup_steps: 500
+validation:
+  every: 500
+  n_samples: 32

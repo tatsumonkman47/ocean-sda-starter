@@ -1,0 +1,18 @@
+# ════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: SSH-only, 11-frame model (the released ssh_only_T11 settings).
+#
+# Inherits every option from configs/train_base.yaml; only the keys below
+# change. Use with:
+#   python scripts/train.py config=configs/train_ssh_only.yaml data_dir=...
+# See train_base.yaml for what each option means.
+# ════════════════════════════════════════════════════════════════════════════
+
+experiment_name: ssh_only
+variables:                      # one channel: SSH (lists replace the base list)
+  - name: SSH
+    field: FULL_PACIFIC_zarr_llc4320_SSH_minus_300km_filtered_fullt
+    units: m
+    preprocessing: llc4320 SSH with scales longer than 300 km removed (spatial high-pass)
+    normalization: {scale: 0.051, offset: 0.0, climatology: null}
+time_length: 11                 # longer windows: 11 frames per sample
+batch_size: 16                  # 11 frames use about twice the memory of 5

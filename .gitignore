@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.ipynb_checkpoints/
+runs/
+outputs/
+*.pt
+/checkpoints/
+/osse_tiles/
+/training_patches/
+.pytest_cache/
+.ruff_cache/
