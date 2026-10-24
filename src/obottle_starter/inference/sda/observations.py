@@ -273,6 +273,8 @@ def build_observation(
 
     device = operator.terms[0].mask.device
     std = _per_obs(sigma_y, operator, device, "sigma_y")
+    if not bool((torch.isfinite(std) & (std > 0)).all()):
+        raise ValueError("sigma_y must be finite and positive")
     noise = None
     if y is None:
         if truth is None:
@@ -284,6 +286,8 @@ def build_observation(
                 if instrument_noise is True
                 else _per_obs(instrument_noise, operator, device, "instrument_noise")
             )
+            if not bool((torch.isfinite(noise_std) & (noise_std >= 0)).all()):
+                raise ValueError("instrument_noise must be finite and >= 0")
             gen = torch.Generator(device="cpu")
             if seed is not None:
                 gen.manual_seed(int(seed))
@@ -293,6 +297,12 @@ def build_observation(
             y = y + noise
     elif y.shape != (int(std.numel()),):
         raise ValueError(f"y must have shape ({std.numel()},); got {tuple(y.shape)}")
+    # Only observed entries are in y; NaN elsewhere in a field never gets here.
+    if not bool(torch.isfinite(y).all()):
+        raise ValueError(
+            "observed values must be finite; found NaN or inf where a mask "
+            "says observed (check y, or the truth for an OSSE)"
+        )
 
     return ObservationSpec(
         y=y,

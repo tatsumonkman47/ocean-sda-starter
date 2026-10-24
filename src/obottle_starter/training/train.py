@@ -87,41 +87,84 @@ def _record_climatology_checksums(cfg) -> None:
             clim.sha256 = file_sha256(Normalizer([spec]).climatology(0).path)
 
 
-def _resume_source(cfg, latest: Path) -> Path | None:
-    """The checkpoint to resume from, or ``None`` for a fresh run."""
+def _resume_source(cfg, out_dir: Path) -> Path | None:
+    """The checkpoint to resume from, or ``None`` for a fresh run.
+
+    Decided before anything is written. An explicit ``resume_from`` must
+    exist. A directory counts as holding a run if it has ``config.yaml`` or
+    any checkpoint, not only ``checkpoint_latest.pt``.
+    """
     start = cfg.get("start", "fresh")
+    ckpt_dir = out_dir / "checkpoints"
+    latest = ckpt_dir / "checkpoint_latest.pt"
+    checkpoints = sorted(ckpt_dir.glob("checkpoint_*.pt")) if ckpt_dir.exists() else []
+    has_run = bool(checkpoints) or (out_dir / "config.yaml").exists()
+    if cfg.get("resume_from"):
+        path = Path(cfg.resume_from)
+        if not path.exists():
+            raise ConfigError(f"resume_from={path} does not exist")
+        return path
     if start == "fresh":
-        if latest.exists():
+        if has_run:
             raise ConfigError(
-                f"{latest.parent} already holds a run. Use start=resume to "
-                "continue it, start=auto for requeued jobs, or a new "
-                "output_dir / experiment_name for a new run"
+                f"{out_dir} already holds a run (config.yaml or checkpoints). "
+                "Use start=resume to continue it, start=auto for requeued "
+                "jobs, or a new output_dir / experiment_name for a new run"
             )
         return None
-    path = Path(cfg.resume_from) if cfg.get("resume_from") else latest
-    if path.exists():
-        return path
+    if latest.exists():
+        return latest
+    if checkpoints:
+        raise ConfigError(
+            f"{ckpt_dir} has checkpoints but no checkpoint_latest.pt; choose "
+            "one with resume_from=..."
+        )
     if start == "resume":
-        raise ConfigError(f"start=resume, but there is no checkpoint at {path}")
-    return None  # auto without a checkpoint: a fresh run
+        raise ConfigError(f"start=resume, but there is no checkpoint at {latest}")
+    # auto with no checkpoint: a fresh run. A config.yaml alone means an
+    # earlier attempt stopped before its first checkpoint, so nothing is lost.
+    return None
 
 
-def _check_replicas(net, ema, world: int) -> None:
-    """Fail if model or EMA weights differ between DDP processes."""
+def _check_replicas(net, ema) -> None:
+    """Fail unless model and EMA weights are identical on every DDP process.
+
+    Exact: rank 0's tensors are broadcast and compared element by element.
+    """
+    mismatched = torch.zeros((), device=next(net.parameters()).device)
     with torch.no_grad():
-        sums = torch.stack(
-            [
-                sum(p.double().sum() for p in module.parameters())
-                for module in (net, ema)
-            ]
-        )
-    gathered = [torch.zeros_like(sums) for _ in range(world)]
-    dist.all_gather(gathered, sums)
-    if not all(torch.equal(g, gathered[0]) for g in gathered):
+        for module in (net, ema):
+            for p in module.parameters():
+                reference = p.detach().clone()
+                dist.broadcast(reference, src=0)
+                if not torch.equal(reference, p):
+                    mismatched += 1
+    dist.all_reduce(mismatched)
+    if mismatched.item():
         raise RuntimeError(
-            "DDP replicas have diverged (model or EMA weights differ between "
-            f"processes): {[g.tolist() for g in gathered]}"
+            "DDP replicas have diverged: model or EMA weights differ between "
+            f"processes ({int(mismatched.item())} tensors)"
         )
+
+
+def training_sampler(cfg, dataset, rank: int, world: int):
+    """A sampler giving each DDP process different samples, or ``None``.
+
+    The generated datasets (``structured``, ``synthetic``) are deterministic
+    per index, so without a sampler every process would train on the same
+    clean samples. ``PatchDataset`` draws windows at random from a
+    per-process seed and needs none.
+    """
+    if world <= 1 or cfg.get("data_source") == "patches":
+        return None
+    return torch.utils.data.distributed.DistributedSampler(
+        dataset,
+        num_replicas=world,
+        rank=rank,
+        shuffle=True,
+        seed=int(cfg.seed),
+        drop_last=True,
+    )
 
 
 def train(cfg) -> Path:
@@ -144,7 +187,7 @@ def train(cfg) -> Path:
     out_dir = Path(cfg.output_dir)
     ckpt_dir = out_dir / "checkpoints"
     latest = ckpt_dir / "checkpoint_latest.pt"
-    resume = _resume_source(cfg, latest)
+    resume = _resume_source(cfg, out_dir)
     _record_climatology_checksums(cfg)
 
     # Same initial weights on every process; then different data and noise.
@@ -213,7 +256,19 @@ def train(cfg) -> Path:
             )
         ema = copy.deepcopy(net).eval().requires_grad_(False)
 
-    # Validation passed: only now write run metadata.
+    dataset = build_dataset(cfg)
+    sampler = training_sampler(cfg, dataset, rank, world)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        sampler=sampler,
+        num_workers=cfg.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=cfg.num_workers > 0,
+        drop_last=True,
+    )
+
+    # All checks passed and the data opened: only now write run metadata.
     if rank == 0:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         if resume is None:
@@ -221,16 +276,6 @@ def train(cfg) -> Path:
         elif changes:
             with open(out_dir / "config_changes.yaml", "a") as f:
                 f.write(OmegaConf.to_yaml({f"resume at step {step}": changes}))
-
-    dataset = build_dataset(cfg)
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
-        pin_memory=device.type == "cuda",
-        persistent_workers=cfg.num_workers > 0,
-        drop_last=True,
-    )
     loss_fn = EDMLoss(
         distribution=cfg.get("noise_distribution", "log_uniform"),
         P_mean=cfg.get("p_mean", -1.2),
@@ -280,11 +325,17 @@ def train(cfg) -> Path:
 
     net.train()
     t0, seen = time.time(), 0
+    epoch = 0
+    if sampler is not None:
+        sampler.set_epoch(epoch)
     batches = iter(loader)
     while step < cfg.num_steps:
         try:
             batch = next(batches)
         except StopIteration:
+            epoch += 1
+            if sampler is not None:
+                sampler.set_epoch(epoch)  # a new shuffle each pass
             batches = iter(loader)
             batch = next(batches)
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
@@ -328,7 +379,7 @@ def train(cfg) -> Path:
                     f.write("\n")
         if step % cfg.checkpoint_every == 0 or step == cfg.num_steps:
             if distributed:
-                _check_replicas(net, ema, world)
+                _check_replicas(net, ema)
             if rank == 0:
                 _save(
                     ckpt_dir / f"checkpoint_step{step}.pt",

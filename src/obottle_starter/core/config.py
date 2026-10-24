@@ -290,6 +290,10 @@ def _is_int(x) -> bool:
     return isinstance(x, int) and not isinstance(x, bool)
 
 
+def _is_whole(x) -> bool:
+    return _is_number(x) and float(x).is_integer()
+
+
 def _in_unit_interval(x) -> bool:
     return _is_number(x) and 0.0 <= x <= 1.0
 
@@ -594,6 +598,13 @@ def validate_training(cfg) -> list[str]:
     if mode == "nonuniform_offsets" and _is_int(T):
         step = cfg.get("nonuniform_minimum_offset_hours")
         span = cfg.get("nonuniform_max_span_hours")
+        # Stores are hourly and frames are picked by index, so offsets and
+        # spans must be whole hours (fractional values would be truncated).
+        errors.check(
+            _is_whole(step) and step >= 1 and _is_whole(span),
+            "nonuniform_minimum_offset_hours and nonuniform_max_span_hours must "
+            f"be whole numbers of hours (>= 1); got {step!r}, {span!r}",
+        )
         ok = _is_number(step) and step > 0 and _is_number(span)
         errors.check(
             ok and span >= step * (T - 1),
@@ -727,14 +738,22 @@ def validate_training(cfg) -> list[str]:
                     f"longest window span ({buffer} h)",
                 )
                 train_hi = hi if hi is not None else float("inf")
-                overlaps = vlo < train_hi + buffer and lo < vhi + buffer
-                errors.check(
-                    not overlaps,
-                    f"validation hours [{vlo}, {vhi}) overlap or touch training "
-                    f"hours [{lo}, {hi}) within one window span ({buffer} h); "
-                    "windows from the two would share frames. Leave a gap of at "
-                    "least the maximum window span",
-                )
+                overlap = vlo < train_hi and lo < vhi
+                too_close = vlo < train_hi + buffer and lo < vhi + buffer
+                if overlap:
+                    errors.add(
+                        f"validation hours [{vlo}, {vhi}) overlap training hours "
+                        f"[{lo}, {hi}), so the two sets would share frames"
+                    )
+                else:
+                    errors.check(
+                        not too_close,
+                        f"validation hours [{vlo}, {vhi}) are closer than one "
+                        f"maximum window span ({buffer} h) to training hours "
+                        f"[{lo}, {hi}). They share no frames, but fields that "
+                        "close in time are strongly correlated, which makes "
+                        "validation optimistic. Leave a gap of at least the span",
+                    )
 
     errors.raise_if_any("training config")
     return warnings

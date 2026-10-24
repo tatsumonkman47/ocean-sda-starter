@@ -102,8 +102,11 @@ def test_validation_hours_must_not_overlap_training():
         time_range_end=1000,
         validation={"every": 10, "time_range_start": 1100, "time_range_end": 1800},
     )
-    with pytest.raises(ConfigError, match="overlap"):
+    with pytest.raises(ConfigError, match="closer than one maximum window span"):
         validate_training(cfg)  # gap of 100 h < 336 h maximum span
+    cfg.validation.time_range_start = 900
+    with pytest.raises(ConfigError, match="would share frames"):
+        validate_training(cfg)  # overlaps [0, 1000)
     cfg.validation.time_range_start = 1400
     validate_training(cfg)
     cfg.validation.time_range_end = 1600  # 200 h cannot hold a 336 h window
@@ -235,3 +238,57 @@ def test_checkpoint_records_climatology_checksum(tmp_path):
 def test_run_differences_ignores_runtime_keys(tiny_cfg):
     other = OmegaConf.merge(tiny_cfg, {"num_steps": 99, "lr": 0.1})
     assert run_differences(other, tiny_cfg) == ["lr: 0.0002 -> 0.1"]
+
+
+@pytest.mark.parametrize("step", [0.5, 1.5])
+def test_offsets_must_be_whole_hours(step):
+    with pytest.raises(ConfigError, match="whole numbers of hours"):
+        validate_training(tiny_config(nonuniform_minimum_offset_hours=step))
+    validate_training(tiny_config(nonuniform_max_span_hours=336.0))  # whole: fine
+
+
+def test_resume_source_needs_evidence_and_existing_paths(tmp_path):
+    from obottle_starter.training.train import _resume_source
+
+    def cfg(**kw):
+        return tiny_config(output_dir=str(tmp_path / "run"), **kw)
+
+    run = tmp_path / "run"
+    ckpts = run / "checkpoints"
+    ckpts.mkdir(parents=True)
+    (ckpts / "checkpoint_latest.pt").write_text("x")
+    # A misspelled explicit checkpoint fails even with start=auto and a latest.
+    with pytest.raises(ConfigError, match="does not exist"):
+        _resume_source(cfg(start="auto", resume_from=str(ckpts / "typo.pt")), run)
+    assert _resume_source(cfg(start="auto"), run) == ckpts / "checkpoint_latest.pt"
+    # Only numbered checkpoints: fresh refuses, auto asks which one.
+    (ckpts / "checkpoint_latest.pt").unlink()
+    (ckpts / "checkpoint_step10.pt").write_text("x")
+    with pytest.raises(ConfigError, match="already holds a run"):
+        _resume_source(cfg(), run)
+    with pytest.raises(ConfigError, match="no checkpoint_latest"):
+        _resume_source(cfg(start="auto"), run)
+    # Only run metadata: fresh refuses; auto starts over (nothing was saved).
+    (ckpts / "checkpoint_step10.pt").unlink()
+    (run / "config.yaml").write_text("x")
+    with pytest.raises(ConfigError, match="already holds a run"):
+        _resume_source(cfg(), run)
+    assert _resume_source(cfg(start="auto"), run) is None
+
+
+def test_generated_data_is_split_across_processes(tiny_cfg):
+    from obottle_starter.training.data import StructuredDataset
+    from obottle_starter.training.train import training_sampler
+
+    cfg = OmegaConf.merge(tiny_cfg, {"data_source": "structured"})
+    ds = StructuredDataset(cfg, length=64)
+    a, b = (training_sampler(cfg, ds, r, 2) for r in (0, 1))
+    for s in (a, b):
+        s.set_epoch(0)
+    ia, ib = list(a), list(b)
+    assert len(ia) == len(ib) == 32 and not set(ia) & set(ib)
+    a.set_epoch(1)
+    assert list(a) != ia  # reshuffled each pass
+    assert training_sampler(cfg, ds, 0, 1) is None
+    patches = OmegaConf.merge(cfg, {"data_source": "patches"})
+    assert training_sampler(patches, ds, 0, 2) is None

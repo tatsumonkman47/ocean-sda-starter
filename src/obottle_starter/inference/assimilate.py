@@ -164,9 +164,9 @@ def assimilate(
     missing = [c for c in observed if c not in sigma_y]
     if missing:
         raise ValueError(f"sigma_y has no value for observed {missing}")
-    bad = [c for c in observed if not float(sigma_y[c]) > 0]
+    bad = [c for c in observed if not 0 < float(sigma_y[c]) < float("inf")]
     if bad:
-        raise ValueError(f"sigma_y must be positive; got {bad}")
+        raise ValueError(f"sigma_y must be finite and positive for {bad}")
     sigma = {c: normalizer.sigma_to_model(c, sigma_y[c]) for c in observed}
     if not terms:
         # The sampler still wants an operator; give it one with no rows.

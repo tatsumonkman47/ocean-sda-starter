@@ -95,7 +95,10 @@ L40S. For your own experiments:
 - shrink the network (`model_channels: 32`, see `configs/train_structured.yaml`)
   or use fewer frames;
 - use several GPUs: `torchrun --nproc_per_node=4 scripts/train.py ...`
-  (data-parallel; `batch_size` is per GPU);
+  (data-parallel; `batch_size` is per GPU). Each process gets different
+  samples: patch windows come from a per-process random stream, and the
+  generated datasets are split between processes. At every checkpoint the
+  processes check that their model and EMA weights are identical;
 - split long training into several jobs with `start=auto` (or
   `start=resume`); see "Starting, resuming and initializing" below.
 
@@ -105,9 +108,12 @@ How a run starts is never implicit (`start` in the config):
 
 | `start` | What happens |
 |---|---|
-| `fresh` (default) | A new run. Fails if `output_dir` already has checkpoints, so a forgotten old run is never silently continued. |
-| `resume` | Continues `output_dir`'s run (or `resume_from`). Fails if there is nothing to resume. |
-| `auto` | `resume` if a checkpoint exists, otherwise `fresh`: for requeued Slurm jobs. |
+| `fresh` (default) | A new run. Fails if `output_dir` already holds a run (a `config.yaml` or any checkpoint), so an old run is never silently overwritten. |
+| `resume` | Continues `output_dir`'s run from `checkpoint_latest.pt` (or `resume_from`). Fails if there is nothing to resume. |
+| `auto` | `resume` if `checkpoint_latest.pt` exists, otherwise `fresh`: for requeued Slurm jobs. A directory with only a `config.yaml` (an attempt that stopped before its first checkpoint) starts over; one with numbered checkpoints but no latest one stops and asks for `resume_from`. |
+
+An explicit `resume_from` must exist in every mode; a misspelled path is an
+error, never a silent fresh start.
 
 **Resuming checks meaning, not just shapes.** Reordering two variables or
 changing a normalization constant leaves every tensor shape unchanged but

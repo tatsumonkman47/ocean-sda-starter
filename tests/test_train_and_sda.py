@@ -183,3 +183,47 @@ def test_validation_loss_is_repeatable(tiny_net, tiny_cfg):
     a = denoising_loss_by_sigma(tiny_net, samples, [0.5], cfg)
     b = denoising_loss_by_sigma(tiny_net, samples, [0.5], cfg)
     assert a == b and len(a[0.5]) == 2
+
+
+@pytest.mark.parametrize("conditional", [False, True])
+def test_nonfinite_observations_are_rejected(tmp_path, tiny_net, tiny_cfg, conditional):
+    net, cfg = tiny_net, tiny_cfg
+    if conditional:
+        cond = tiny_config(
+            output_dir=str(tmp_path / "c"),
+            num_steps=1,
+            conditioning={"mode": "observations"},
+        )
+        net, cfg = load_checkpoint(
+            train(cond) / "checkpoints" / "checkpoint_latest.pt", "cpu"
+        )
+    rng = np.random.default_rng(0)
+    truth = {
+        "SSH": rng.normal(0, 0.05, (3, 16, 16)),
+        "SST": rng.normal(18, 1, (3, 16, 16)),
+    }
+    masks = random_masks(["SSH"], (3, 16, 16), 0.3, seed=0)
+    kw = dict(
+        times=TIMES, center_lon=0.0, masks=masks, n_members=1, steps=2, verbose=False
+    )
+    y = {"SSH": truth["SSH"].copy()}
+    y["SSH"][~masks["SSH"]] = np.nan  # unobserved NaN: fine
+    ds = assimilate(net, cfg, y=y, sigma_y=0.01, **kw)
+    assert np.isfinite(ds.samples).all()
+    y["SSH"][
+        masks["SSH"].nonzero()[0][0],
+        masks["SSH"].nonzero()[1][0],
+        masks["SSH"].nonzero()[2][0],
+    ] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        assimilate(net, cfg, y=y, sigma_y=0.01, **kw)
+    holey = {k: v.copy() for k, v in truth.items()}
+    holey["SSH"][masks["SSH"]] = np.inf
+    with pytest.raises(ValueError, match="finite"):
+        assimilate(net, cfg, truth=holey, sigma_y=0.01, **kw)
+    with pytest.raises(ValueError, match="finite and positive"):
+        assimilate(net, cfg, truth=truth, sigma_y=float("inf"), **kw)
+    with pytest.raises(ValueError, match="instrument_noise"):
+        assimilate(
+            net, cfg, truth=truth, sigma_y=0.01, instrument_noise=float("nan"), **kw
+        )
