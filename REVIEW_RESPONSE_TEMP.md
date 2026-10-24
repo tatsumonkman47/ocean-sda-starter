@@ -212,7 +212,7 @@ Nothing had been run with the repository, so these were made directly rather tha
 | §5.3 Configurable precision | Small, but not requested. Docs now explain why SDA runs in float32. |
 | §3.1 Rectangular patches; §6.2 attention by stage index, heads, residual style, boundaries; §6.5 splitting `networks.py` | Architecture work that changes state-dict keys or parameter shapes. The review itself advises doing it after compatibility checks, as separate experiments. |
 | §7.1 Named conditioning concepts; §7.3 noise-level inputs; §7.4 separating mask, operator and noise generation | A redesign of the conditioning interface; best done together with a concrete conditional-model experiment. |
-| §8.1–§8.2 General observation interface and operators (coarse-to-fine, tracks) | New functionality. The current linear `ObservationTerm` covers masks and linear combinations; the scaling rule is documented for when operators are added. |
+| §8.1–§8.2 General observation interface and operators (coarse-to-fine, tracks) | Done later as an opt-in module; see §8. |
 | §9.1 Dataset adapter abstraction, irregular source times | Added the cheap safeguards (finite values, `source_variable`, time alignment across variables); a second adapter should wait for a second dataset. |
 | §9.2 Spatial holdouts | Temporal holdout with a buffer is supported for validation; spatial splits need a decision about tile layout. |
 | §9.5 Saving RNG states, code revision and dependency versions | Not requested; the climatology checksum and EMA horizon report were added. |
@@ -363,3 +363,52 @@ Do not introduce registries or interchangeable component schemas solely to antic
 A second concrete architecture, dataset adapter, or conditioning experiment will reveal which interfaces need generalization. For now, fixing the specific cases above offers more value than expanding the configuration hierarchy.
 
 Suggested next step: resolve the two high-priority input/run-safety issues, fix distributed sampling and integer-offset validation, and correct the benchmark comparison. Then retain the current structure for the student handoff.
+
+## 8. Follow-up: general observation interface (§8.1–§8.3)
+
+Added after the review response, at the user's request, as an **opt-in module on main**. Nothing that uses masks changed: `assimilate()`, `ObservationTerm`, the configs, scripts and notebooks 01–02 behave as before.
+
+### What was added
+
+- **`inference/sda/operators.py`:**
+  - `SparseObservation`: each observation is a weighted sum of state values plus a constant, stored as a sparse `(N, K)` index and weight. One class covers:
+    - off-grid points (`point_observations`: bilinear in space, linear between frames, for fractional observation times);
+    - coarse cell averages (`block_average`);
+    - footprint kernels (`footprint_observations`, `gaussian_kernel`);
+    - combinations of variables and time averages, by adding and scaling rows: `0.5 * (obs_t0 + obs_t1)`.
+  - `ObservationSet` concatenates several observation types.
+  - `ObservationCovariance` is a block-diagonal `R`: vector blocks for independent errors, dense blocks for correlated ones (`exponential_covariance` for along-track errors). Dense blocks are factorized, so each should stay at a few thousand observations or fewer.
+- **`inference/general.py`:**
+  - `model_unit_observation` rewrites a physical-unit observation equation consistently: `A_model = Q(H S x + H b + offset)`, `y_model = Q y_phys`, `R_model = Q R Qᵀ`. This addresses §8.3. The default `scaling="error"` (`Q = 1/σ_y` per observation) puts every observation in units of its own error. `scaling="row_norm"` (unit-size rows in model units, i.e. what `assimilate` does for masks) and explicit per-part `Q` are available.
+  - **Why that default:** the first notebook run used `row_norm`, and in the joint SST-footprint plus SSH-track example the 4-iteration solve left the SST footprints 4–5 error stds from their observations. A GPU comparison (`/scratch/tm3076/obottle-starter-verify/refactor/nb03/fp_*.out`) showed SST footprints alone fit fine at 4 iterations (0.98). In the joint problem, the diagonal preconditioner reached 1.30, 16 iterations 1.49, and error scaling 1.09 at no extra cost. The operator itself was checked separately: it reproduces the observations from the truth to 1e-6.
+  - `assimilate_general` takes physical units in and out and returns samples plus observation-space diagnostics: `y`, each member's `predicted`, `error_std`, `scaling`, operator coordinates, and a whitened `misfit` per member.
+- **Guidance:** MMPS and Rozet accept an `ObservationCovariance`. MMPS multiplies by `R`; Rozet solves with `R + γσ_t² I` block by block and whitens its diagnostics with `R`. A plain variance tensor is wrapped and computes bit for bit as before (tested). `run_inference` reads the state shape from general operators.
+- **Input checks:** observations must be finite, variances finite and positive, and dense blocks symmetric positive definite. These apply to the general path; follow-up §7.4 asks for the same on the mask path, which is not yet done.
+- **Notebook `examples/03_general_observations.ipynb`** (released joint model, GPU):
+  1. coarse-to-fine SSH from 64 km averages, against cubic interpolation of the coarse field;
+  2. along-track SSH points at fractional times with exponentially correlated errors, against wrongly assuming independent errors;
+  3. SST footprints averaged over two frames, assimilated jointly with the SSH tracks.
+- **Docs:** README ("General observations"), page 4 ("Observations that are not pixels"), page 5 (extensions table).
+
+### Verification
+
+- **`tests/test_operators.py`** (15 tests):
+  - operators reproduce linear fields exactly; block averages equal manual means; footprints average constants to themselves at edges; sums and scaling give time averages;
+  - covariance algebra (multiply, solve, whiten, shift, scale, and the empirical covariance of samples) matches dense matrices;
+  - **MMPS with points, block averages and a correlated block reproduces the exact Gaussian posterior** for CG, GMRES and MINRES, with and without the diagonal preconditioner;
+  - Rozet with correlated errors matches its closed form;
+  - plain variance tensors are bitwise unchanged;
+  - physical-to-model scaling is consistent;
+  - an end-to-end `assimilate_general` run, and the input validation.
+- Full suite: **107 passed** (92 earlier tests plus 15 new), including the released-checkpoint regression test.
+- Notebook executed on one L40S (job 20783165, 25 minutes; executed copy in `/scratch/tm3076/obottle-starter-verify/refactor/nb03/`):
+  - **Coarse-to-fine:** SSH RMSE 0.0166 m for the SDA ensemble mean, against 0.0291 m for cubic interpolation of the 64 km averages (truth std 0.073 m). Members match the averages (whitened misfit 0.90) and carry fine-scale power that interpolation lacks.
+  - **Tracks:** the correlated and the independent `R` give nearly the same result here (SSH RMSE 0.0569 vs 0.0564 m, error/spread 1.32 vs 1.29). The notebook says so and does not claim a benefit from one window.
+  - **Joint footprints and tracks:** SST footprints fit at 1.07 error stds and tracks at 1.11 and 1.14, with SST RMSE 0.32 °C. With `row_norm` the footprints are left at 4.35 and SST RMSE is 0.75 °C; the notebook shows both.
+
+### Not included
+
+- Nonlinear operators: MMPS would linearize them at each step, which is an approximation.
+- General observations with conditional models: their observation inputs are mask-shaped.
+- Correlation between different observation types (blocks are per type), and non-block-diagonal `R`.
+

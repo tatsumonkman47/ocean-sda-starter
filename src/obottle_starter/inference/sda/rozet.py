@@ -56,6 +56,7 @@ from torch import Tensor
 
 from obottle_starter.inference.sda._azula.denoise import Denoiser, DiracPosterior
 from obottle_starter.inference.sda._azula.noise import Schedule
+from obottle_starter.inference.sda.operators import as_covariance
 
 __all__ = ["RozetDenoiser"]
 
@@ -68,7 +69,10 @@ class RozetDenoiser(Denoiser):
         y: Observations, shape ``(N,)`` or ``(B, N)``.
         A: Differentiable forward operator, ``(B, *x) -> (B, N)``.
         cov_y: Observation noise variances (diagonal of :math:`\Sigma_y`),
-            shape ``(N,)`` or broadcastable to ``y``.
+            shape ``(N,)`` or broadcastable to ``y``, or an
+            :class:`~obottle_starter.inference.sda.operators.ObservationCovariance`.
+            With correlated blocks the likelihood covariance is
+            ``Σ_y + γ (σ_t/α_t)² I``, solved block by block.
         gamma: ``γ`` in the likelihood variance ``Σ_y + γ (σ_t/α_t)²``.
         record_diagnostics: Record the misfit at each step in
             :attr:`diagnostics`. Costs nothing extra.
@@ -95,6 +99,7 @@ class RozetDenoiser(Denoiser):
         self.y = y
         self.A = A
         self.cov_y = cov_y
+        self.cov = as_covariance(cov_y)
         self.gamma = float(gamma)
         self.record_diagnostics = bool(record_diagnostics)
         self.obs_groups = obs_groups
@@ -121,9 +126,9 @@ class RozetDenoiser(Denoiser):
         # Observation-space variance: Σ_y + γ (σ_t/α_t)², one value per
         # observation (see the module docstring for when this equals the
         # state-space heuristic propagated through A).
-        var = self.cov_y + self.gamma * (sigma_t / alpha_t) ** 2
+        likelihood = self.cov.shifted(self.gamma * (sigma_t / alpha_t) ** 2)
         b = self.y - y_hat
-        g = b / var
+        g = likelihood.solve(b)
         # σ_t²/α_t · Jᵀ Aᵀ g: autograd.grad gives the vector-Jacobian
         # product through A and the network (Jᵀ v, not J v).
         correction = sigma_t**2 / alpha_t * torch.autograd.grad(y_hat, x_t, g)[0]
@@ -133,8 +138,8 @@ class RozetDenoiser(Denoiser):
         return DiracPosterior(mean=x_hat + correction)
 
     def _record(self, t, sigma_t, b) -> None:
-        # Misfit in units of the observation error: about 1 once fitted.
-        z = b / self.cov_y.sqrt()
+        # Misfit in units of the observation error (whitened by Σ_y).
+        z = self.cov.whiten(b)
         entry = {
             "t": float(t),
             "sigma": float(sigma_t),

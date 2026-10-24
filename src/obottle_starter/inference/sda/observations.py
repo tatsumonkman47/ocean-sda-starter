@@ -155,8 +155,10 @@ class ObservationSpec:
     Attributes:
         y: Observed values, shape ``(N,)``.
         cov_y: Observation noise variances, shape ``(N,)``, in the units of
-            ``y``.
-        operator: The forward operator that produced ``y``.
+            ``y``, or an ``ObservationCovariance`` (general operators).
+        operator: The forward operator that produced ``y``: an
+            :class:`ObservationOperator`, or a general operator from
+            :mod:`obottle_starter.inference.sda.operators`.
         H, W: Spatial size, for unflattening.
         truth: Optional ``(C, T, H*W)`` truth in normalized units (OSSE only).
         noise: Optional ``(N,)`` synthetic noise that was added to ``y``.
@@ -176,6 +178,8 @@ class ObservationSpec:
         """``(C, T, H*W)`` footprint; ``C`` comes from ``truth`` or the terms."""
         if self.truth is not None:
             n_channels = self.truth.shape[0]
+        elif hasattr(self.operator, "state_shape"):
+            n_channels = self.operator.state_shape[0]
         else:
             n_channels = 1 + max(c for t in self.operator.terms for c in t.weights)
         return self.operator.footprint(n_channels)

@@ -58,6 +58,7 @@ from torch import Tensor
 
 from obottle_starter.inference.sda._azula.denoise import Denoiser, DiracPosterior
 from obottle_starter.inference.sda._azula.noise import Schedule
+from obottle_starter.inference.sda.operators import as_covariance
 from obottle_starter.inference.sda.solvers import get_solver
 
 __all__ = ["MMPSDenoiser"]
@@ -74,7 +75,9 @@ class MMPSDenoiser(Denoiser):
         A: Differentiable forward operator, ``(B, *x) -> (B, N)``. It may be
             affine; only its Jacobian enters the linear system.
         cov_y: Observation noise variances (diagonal of :math:`\Sigma_y`),
-            shape ``(N,)`` or broadcastable to ``y``.
+            shape ``(N,)`` or broadcastable to ``y``, or an
+            :class:`~obottle_starter.inference.sda.operators.ObservationCovariance`
+            (block-diagonal, possibly correlated errors).
         solver: ``"cg"``, ``"gmres"`` or ``"minres"``.
         iterations: Krylov iterations per step. The default of 1 reproduces
             azula; the high-level API uses
@@ -124,6 +127,7 @@ class MMPSDenoiser(Denoiser):
         self.y = y
         self.A = A
         self.cov_y = cov_y
+        self.cov = as_covariance(cov_y)
         self.solver = solver
         self.solve = get_solver(solver)
         self.iterations = int(iterations)
@@ -193,12 +197,13 @@ class MMPSDenoiser(Denoiser):
             # denoiser, approximate for a learned one).
             return gamma_t * torch.autograd.grad(x_hat, x_t, v, retain_graph=True)[0]
 
-        cov_y = self.cov_y
+        cov = self.cov
         if self.cov_y_inflation:
-            cov_y = cov_y + self.cov_y_inflation * sigma_t**2
+            cov = cov.shifted(self.cov_y_inflation * sigma_t**2)
 
         def operator(v: Tensor) -> Tensor:
-            return cov_y * v + A_lin(cov_x(At(v)))
+            # Σ_y v + A Cov[x | x_t] Aᵀ v (Σ_y may be block-diagonal).
+            return cov.matvec(v) + A_lin(cov_x(At(v)))
 
         b = self.y - y_hat
         g_prev = self._g_prev
@@ -207,7 +212,7 @@ class MMPSDenoiser(Denoiser):
 
         if self.preconditioner == "diagonal":
             c_t = sigma_t**2 * self.sigma_data**2 / (sigma_t**2 + self.sigma_data**2)
-            d = cov_y + c_t * self._a_row_norm_sq(x_hat)
+            d = cov.diagonal() + c_t * self._a_row_norm_sq(x_hat)
             s = torch.rsqrt(d.clamp(min=torch.finfo(d.dtype).tiny))
 
             def scaled(u: Tensor) -> Tensor:

@@ -256,6 +256,27 @@ automatically better: a model that already approximates `p(x | y)` gets the
 likelihood of `y` applied again, which can over-concentrate the ensemble.
 The output's `route` attribute records which route was used.
 
+## Observations that are not pixels
+
+Everything above observes model pixels through masks. Coarse products
+(cell averages), altimeter tracks (off-grid points, between frame times),
+radiometer footprints and time-averaged products are also linear in the
+state, so the same machinery applies with a different `A`. The errors may
+also be correlated, e.g. along a track, so `Σ_y` is no longer diagonal.
+`inference/sda/operators.py` provides these operators and block-diagonal
+covariances. `assimilate_general` (`inference/general.py`) applies the
+observation-space scaling above (`A_model = Q H S`, `y_model = Q y_phys`,
+`R_model = Q R Qᵀ`) and returns physical-unit samples with
+observation-space diagnostics. Its default puts every observation in units
+of its own error (`Q = 1/σ_y`). With mixed products of very different
+accuracy that matters: in the notebook's joint SST-footprint and SSH-track
+example, scaling rows to unit size in model units instead left the SST
+footprints about 5 error stds from their observations after 4 iterations,
+against about 1.1 with the default. With correlated `Σ_y`, MMPS multiplies by
+`Σ_y` and Rozet solves with `Σ_y + γσ_t² I`, block by block; the exactness
+tests cover both (`tests/test_operators.py`). See
+`examples/03_general_observations.ipynb`.
+
 ## Larger domains
 
 One window is 128 × 128 cells. Covering larger regions means tiling

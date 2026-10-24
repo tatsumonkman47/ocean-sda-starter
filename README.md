@@ -245,6 +245,26 @@ term = ObservationTerm("SSH_smoothed", mask, weights={0: 1.0}, transforms={0: sm
 average. Keep `y` and `sigma_y` in model units, as explained above. See
 `src/obottle_starter/inference/sda/observations.py`.
 
+**General observations (opt-in).** For observations that are not pixels,
+such as off-grid along-track points, coarse cell averages, footprints, time
+averages or combinations of variables, possibly with correlated errors, use
+`assimilate_general`. It takes physical units, like `assimilate`, and leaves
+the mask workflow above unchanged:
+
+```python
+from obottle_starter.inference.general import assimilate_general
+from obottle_starter.inference.sda.operators import block_average, point_observations
+
+shape = (2, cfg.time_length, cfg.H, cfg.W)                     # (C, T, H, W)
+coarse = block_average(shape, 0, 16)                            # 64 km means of SSH
+post = assimilate_general(net, cfg, coarse, torch.full((coarse.n_obs,), 0.003**2),
+                          times=win.times, center_lon=win.center_lon, truth=win.truth)
+```
+
+`examples/03_general_observations.ipynb` covers three cases: coarse-to-fine
+reconstruction, along-track points with correlated errors, and SST
+footprints averaged over two frames.
+
 ## Train
 
 ```bash
@@ -321,7 +341,9 @@ src/obottle_starter/
     assimilate.py        one call from observations to a posterior ensemble
     osse.py              OSSE tiles, windows, random masks
     metrics.py           errors, spread/skill, ranks, coverage, spectra, coherence
+    general.py           assimilate_general: general linear observations, physical units (opt-in)
     sda/                 MMPS, Rozet and CFG guidance, Krylov solvers, DDIM, observation operators
+                         (masks: observations.py; points, averages, footprints, covariances: operators.py)
   cli.py               config loading for the scripts
 data/                  SST climatology used by the released models' normalization
 configs/               train_base.yaml (every training option) + experiment presets; sda.yaml

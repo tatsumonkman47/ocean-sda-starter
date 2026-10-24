@@ -15,6 +15,7 @@ from obottle_starter.inference.sda.cfg import CFGDenoiser
 from obottle_starter.inference.sda.defaults import DEFAULTS
 from obottle_starter.inference.sda.denoiser import EDMPrecondDenoiser
 from obottle_starter.inference.sda.observations import ObservationSpec
+from obottle_starter.inference.sda.operators import as_covariance
 from obottle_starter.inference.sda.sampling import build_sampler
 
 
@@ -100,7 +101,11 @@ def run_inference(
     device = next(net.parameters()).device
     obs = obs_spec.to(device)
     H, W = obs.H, obs.W
-    T, HW = obs.operator.terms[0].mask.shape
+    if hasattr(obs.operator, "state_shape"):  # general operators (operators.py)
+        _, T, H, W = obs.operator.state_shape
+        HW = H * W
+    else:
+        T, HW = obs.operator.terms[0].mask.shape
     if HW != H * W:
         raise ValueError(f"Observation masks have {HW} pixels; expected {H * W}")
     C = (
@@ -227,7 +232,7 @@ def run_inference(
         "x_sample_members": (["sample", *dims], samples.numpy()),
         "mask_in": (dims, mask_hw.numpy()),
         "y_obs": (["obs"], obs.y.cpu().numpy()),
-        "cov_y": (["obs"], obs.cov_y.cpu().numpy()),
+        "cov_y": (["obs"], as_covariance(obs.cov_y).diagonal().cpu().numpy()),
         "obs_term": (["obs"], obs.operator.groups.cpu().numpy()),
     }
     if obs.truth is not None:

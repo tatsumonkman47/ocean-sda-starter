@@ -85,6 +85,9 @@ Apache-2.0.
 | Rozet & Louppe (2023) covariance heuristic | Implemented (`guidance: rozet`, page 4). Checked against exact formulas on a Gaussian prior; γ not yet tuned for these models. |
 | CG or MINRES instead of GMRES | Implemented; untested on these models. |
 | Warm start, diagonal preconditioner, `σ_y` inflation | Implemented and checked against an exact Gaussian posterior; untested on these models. |
-| Non-mask observation operators (smoothing, footprints, sums of channels) | Supported through `ObservationTerm(transforms=...)` for linear operators with independent errors. Keep them in model units (page 4, observation-space scaling). Nonlinear operators and correlated errors are not supported by the high-level API. |
+| Non-mask observation operators (off-grid points, coarse averages, footprints, time averages, sums of variables) | Supported, opt-in: `inference/sda/operators.py` and `assimilate_general` (`inference/general.py`), in physical units with consistent scaling; `examples/03_general_observations.ipynb`. Linear operators only. Mask-based `ObservationTerm(transforms=...)` still works for operators that sit on pixels. |
+| Correlated observation errors | Supported with the general operators: `ObservationCovariance` with dense blocks (e.g. one per track, `exponential_covariance`), in MMPS and Rozet. Dense blocks are factorized, so keep each block to a few thousand observations. |
+| Nonlinear observation operators | Not provided. MMPS would linearize them at the denoised estimate each step, which is an approximation. |
+| General observations with conditional models | Not supported: a conditional model's observation inputs are mask-shaped. |
 | Larger domains (windowed SDA) | In the parent project; to be added after publication. |
 | Real observations | `assimilate(..., y=...)`. Resample them to the 4 km tile grid first, and match the SSH filtering (300 km high-pass) the model was trained on. |
