@@ -6,21 +6,22 @@
 > (Claude and Codex) and will receive further human review and editing.
 > Explanations and examples may be incomplete or contain errors. The code was
 > also adapted from research code with AI assistance; review and test it for
-> your application. Corrections and feedback are welcome.
+> your application. Corrections and feedback are welcome!
 
-**A reusable foundation for diffusion-based field reconstruction.**
-This repository provides training, data-loading, and posterior-sampling
+**A starter template for diffusion-based field reconstruction.**
+
+This repository provides the training, data-loading, and posterior-sampling
 workflows that you can adapt to your own variables, datasets, and scientific
 applications.
 
-The included joint sea-surface height (SSH) and temperature (SST) model
-serves primarily as a **worked demonstration** of those workflows. The
-repository is intended to support efforts beyond that particular model,
+I've included a number of tutorials and demonstrations that call a default,
+pre-trained diffusion model for joint sea-surface height (SSH) and temperature (SST) reconstruction 
+whose weights are included in the repository. However, I've tried to make things general enough
+for this repository to support efforts beyond the included default model,
 including new oceanographic and other geophysical reconstruction problems.
 
-I built it with help from Claude and Codex to make it easier to learn these
-methods, run an example, and develop your own experiments from a common
-starting point.
+I built this repository with help from Claude and Codex, so treat code and documentation cautiously.
+I'll continue editing and re-reading this repository when I have time.
 
 **Start here:** [Install](#install) · [Training and SDA inference](#training-and-sda-inference) ·
 [Documentation](docs/README.md)
