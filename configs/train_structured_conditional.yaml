@@ -1,0 +1,53 @@
+# ════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: a small conditional model (M_3 / M_4) on structured synthetic
+# data, for learning observation conditioning and classifier-free guidance
+# without the data bundle. Used by examples/04_conditional_and_cfg.ipynb.
+#
+# The data and network are those of configs/train_structured.yaml (repeated
+# here, because one experiment file is merged on top of train_base.yaml).
+# Only A is observed, in random bands with noise; B (correlation 0.8 with A)
+# is never observed, so the model has to infer it. One sample in five sees
+# the null condition, which trains the branch CFG needs.
+#   python scripts/train.py config=configs/train_structured_conditional.yaml
+# About 11 minutes on one L40S GPU. See docs/06_conditional_models.md.
+# ════════════════════════════════════════════════════════════════════════════
+
+experiment_name: structured_conditional
+data_source: structured
+variables:                      # generated in model units: physical = scale * x
+  - name: A
+    units: "1"
+    normalization: {scale: 1.0, offset: 0.0, climatology: null}
+  - name: B
+    units: "1"
+    normalization: {scale: 1.0, offset: 0.0, climatology: null}
+H: 32
+W: 32
+time_length: 4
+model_channels: 32
+channel_mult: [1, 2, 2]         # levels at 32, 16 and 8 cells
+attn_resolutions: [8]
+temporal_attn_resolutions: [8, 16]
+calendar_embed_channels: 0      # generated fields have no seasons or days
+label_dim: 0                    # no global labels
+label_dropout: 0.0
+nonuniform_max_span_hours: 96   # 4 days: features drift up to 8 cells
+conditioning:
+  mode: observations
+  observe: [A]                  # B is left for the model to infer
+  mask_channel: true
+  training_observations:
+    masks: stripes              # random bands, a crude stand-in for swaths
+    stripe_width: 6             # cells, about a fifth of the patch per frame
+    stripes_per_frame: 1
+    noise_std: 0.1              # model units (scale 1)
+    null_probability: 0.2       # "observation dropout": trains the CFG null branch
+batch_size: 16
+num_workers: 2
+num_steps: 5000
+log_every: 100
+checkpoint_every: 1000
+lr_rampup_steps: 500
+validation:
+  every: 500
+  n_samples: 32

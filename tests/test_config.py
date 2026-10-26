@@ -27,7 +27,13 @@ SDA = str(ROOT / "configs" / "sda.yaml")
 
 
 def test_presets_are_valid():
-    for name in ("smoke_test", "structured", "ssh_only", "conditional"):
+    for name in (
+        "smoke_test",
+        "structured",
+        "structured_conditional",
+        "ssh_only",
+        "conditional",
+    ):
         cfg = load_config(BASE, [f"config={ROOT}/configs/train_{name}.yaml"])
         if cfg.data_source == "patches":
             cfg.data_dir = "/data"

@@ -151,6 +151,37 @@ The model only takes observations of the channels in its
 `conditioning.observe` list. Others are ignored by `conditional` and `cfg`
 (with a warning) but still used by `mmps` and `rozet`.
 
+## Try it: notebook 04
+
+`examples/04_conditional_and_cfg.ipynb` runs the whole route on the
+structured synthetic fields, without the data bundle: it trains a small
+conditional model that sees noisy bands of one variable, with
+`null_probability: 0.2` (`configs/train_structured_conditional.yaml`), then
+samples it with `guidance="conditional"` and with CFG at weights from 0
+(the null branch, i.e. the prior) to 4, and plots ensemble-mean error and
+spread inside and outside the observed bands, for the observed and the
+unobserved variable.
+
+## What you can change without new code, and what needs code
+
+Supported by configuration alone: which variables are observed
+(`observe`), the mask family, coverage and noise of the training
+observations, the mask channel, `null_probability`, starting from an
+unconditional checkpoint (`init_from`), and the guidance route and weight
+at sampling. All of these are **observation maps of model variables**:
+values and masks on the model grid.
+
+Anything else the network should see needs code. Two common cases:
+
+| Experiment | Files to change |
+|---|---|
+| Give the model the observation-noise level, so one model covers several noise levels and `sigma_y` means something at sampling | `training/obs_simulation.py` (`training_condition`: draw the noise level per sample, build its channel); `core/obs_conditioning.py` (`observation_channels`, `build_obs_condition`: one more channel); `inference/assimilate.py` (build the same channel from `sigma_y`) |
+| Other context: wind, a coarse product, a forcing field | `training/data.py` (the dataset returns it); `core/obs_conditioning.py` or a sibling module (turn it into input channels); `training/train.py` and `inference/assimilate.py` (pass it in, as the observation condition is) |
+
+In both cases the input layer grows, so start a new run (or use
+`init_from`, which pads new input channels with zeros), and add a test
+like those in `tests/test_conditional.py`.
+
 ## Ideas to explore
 
 - Train M_3 and M_4 with `stripes`, compare them with MMPS on the OSSE

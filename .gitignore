@@ -3,9 +3,12 @@ __pycache__/
 .ipynb_checkpoints/
 runs/
 outputs/
+out/
 *.pt
-/checkpoints/
-/osse_tiles/
-/training_patches/
+/checkpoints
+/osse_tiles
+/training_patches
 .pytest_cache/
 .ruff_cache/
+.venv/
+.DS_Store

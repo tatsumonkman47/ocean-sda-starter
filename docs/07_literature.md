@@ -135,6 +135,27 @@ inference only. Approximates the likelihood with variance
 (`inference/sda/rozet.py`). The window-assembly idea underlies the parent
 project's windowed SDA.
 
+**Finzi, Boral, Wilson, Sha & Zepeda-Núñez (2023). *User-defined Event
+Sampling and Uncertainty Quantification in Diffusion Models for Physical
+Dynamical Systems.* ICML.**
+[arXiv:2306.07526](https://arxiv.org/abs/2306.07526)
+Conditions a diffusion model of chaotic dynamics on observations or
+user-defined events with an approximation of the conditional score that
+uses the covariance of the denoised estimate (from the denoiser's
+Jacobian, by Tweedie's formula), and shows it converges to the true
+conditional as the noise level falls. An early form of the second-order
+likelihood that MMPS uses.
+
+**Boys, Girolami, Pidstrigach, Reich, Mosca & Akyildiz (2024). *Tweedie
+Moment Projected Diffusions for Inverse Problems.* TMLR.**
+[arXiv:2310.06721](https://arxiv.org/abs/2310.06721)
+TMPD: approximates each reverse step's conditional with a Gaussian whose
+mean and covariance both come from Tweedie's formula, instead of DPS's
+point estimate plus heuristics. Removes the hand-tuned step size, is
+stable across noise levels, and comes with a guarantee for Gaussian
+targets. Closely related to MMPS, which solves the same kind of system
+iteratively.
+
 **Rozet, Andry, Lanusse & Louppe (2024). *Learning Diffusion Priors from
 Observations by Expectation Maximization.* NeurIPS.**
 [arXiv:2405.13712](https://arxiv.org/abs/2405.13712)
@@ -185,6 +206,37 @@ Weather Station Observations at Kilometer Scales.*
 Score-based data assimilation of weather-station data into
 kilometer-scale fields, with a diffusion prior trained on a regional
 analysis. A close atmospheric analogue to this work.
+
+**Martin, Manucharyan & Klein (2025). *Generative Data Assimilation for
+Surface Ocean State Estimation From Multi-Modal Satellite Observations.*
+Journal of Advances in Modeling Earth Systems 17(8), e2025MS005063.**
+[doi:10.1029/2025MS005063](https://doi.org/10.1029/2025MS005063)
+GenDA: a score-based diffusion model trained on a simulation serves as a
+Bayesian prior, and sparse multi-modal satellite observations are
+assimilated at inference to jointly reconstruct surface ocean variables at
+eddy-resolving scales, including currents that satellites do not observe.
+It reconstructs only the surface rather than the full interior state that
+dynamical DA needs. The same two-stage design as this repository: train a
+prior on simulation, add the observations only when sampling.
+
+**Martin, Manucharyan & Klein (2026). *Generative Data Assimilation
+Highlights Fronts as Key Regulators of Ocean Energy Cascade.* arXiv.**
+[arXiv:2608.14955](https://arxiv.org/abs/2608.14955)
+Uses generative data assimilation of several satellite products to
+reconstruct gap-free, kilometre-scale surface currents over the Agulhas
+Current, then diagnoses the energy cascade from them: upscale transfer
+from submesoscales to mesoscale eddies above about 10 km, downscale below,
+both concentrated in fronts. An example of using the reconstructions for
+science, not only for mapping.
+
+**Monkman, Balwada, Jones, Martin & Smith (2026). *Spatiotemporal Mapping
+of Sea Surface Height and Temperature Fields from Satellite Observations
+Using Score-based Data Assimilation.* Accepted in Earth and Space Science;
+preprint on ESS Open Archive.**
+[doi:10.22541/essoar.15003398/v3](https://doi.org/10.22541/essoar.15003398/v3)
+Score-based data assimilation for joint mapping of SSH and SST in space
+and time from satellite observations: the application this repository's
+joint SSH + SST prior and SDA are aimed at.
 
 ## Linear solvers (page 4)
 
