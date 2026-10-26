@@ -86,7 +86,7 @@ Apache-2.0.
 | Fine-tuning a released model | Supported: `init_from=checkpoints/joint_ssh_sst_T5.pt` starts a new run from its EMA weights with a fresh optimizer (the shared checkpoints have no optimizer state). Variables, normalization and network must match; new observation inputs are zero-initialized (page 2). |
 | Conditional models (observation maps as network inputs; M_3 / M_4) | Basic training and sampling checks pass; reconstruction quality has not been evaluated: `conditioning` section, page 6. |
 | Weighting variables in the loss | Not implemented here. The parent projects tried per-channel and noise-level-dependent weights. |
-| Other variables (e.g. U, V) | Add an entry to `variables` with its directory, units and normalization (root README, [Training data format](../README.md#training-data-format)). No code changes for affine normalization. |
+| Other variables (e.g. U, V) | Add an entry to `variables` with its directory, units and normalization ([Training data format](quickstart/training.md#training-data-format)). No code changes for affine normalization. |
 | Incomplete training fields or coastlines | Not supported: targets must be complete (page 2, "Missing data"). |
 | Calendar-based climatology | `climatology.lookup: day_of_year` for new models (any year); the released models use `elapsed_days`, valid only inside the climatology file's dates. |
 

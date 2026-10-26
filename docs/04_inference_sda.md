@@ -7,7 +7,7 @@ uncertain. This page develops that update, compares the available
 approximations, and explains what to check in the resulting ensemble.
 
 For runnable examples, see [notebook 01](../examples/01_prior_and_sda.ipynb)
-and the [README commands](../README.md#reconstruct-fields-from-observations).
+and the [inference guide](quickstart/inference.md).
 
 ## Observation model and posterior distribution
 

@@ -1,4 +1,4 @@
-# Background documentation
+# Documentation
 
 These pages explain how the examples work and what you would need to change
 for your own application. The aim is to connect the mathematics to practical
@@ -8,6 +8,24 @@ observations steer a reconstruction.
 You do not need prior experience with diffusion models. Some familiarity
 with probability, linear algebra, and Python will help; the ocean examples
 provide the physical context.
+
+## Practical guides
+
+Choose a guide for the task you want to run. Commands assume you are in the
+repository root; each guide links to its prerequisites and relevant background.
+
+| Guide | Purpose |
+|---|---|
+| [Installation](quickstart/installation.md) | Set up the package and tested environment |
+| [Downloads](quickstart/downloads.md) | Get released models and data and verify checkpoints |
+| [Inference](quickstart/inference.md) | Reconstruct fields from observations and inspect outputs |
+| [Training](quickstart/training.md) | Train, resume, and configure models for your own data |
+| [Units and scaling](quickstart/units.md) | Keep data, observations, and model normalization consistent |
+
+## Technical background
+
+The [conceptual introduction](introduction.md) uses diagrams to explain
+training and SDA. The pages below develop the mathematics and implementation.
 
 | Page | Read it to learn |
 |---|---|
@@ -20,7 +38,8 @@ provide the physical context.
 | [7. References](07_literature.md) | Papers grouped by topic, with their contributions and connections to the code |
 | [8. Sliding windows](08_windowed_sda.md) | Reconstructing longer time sequences with a model trained on short windows |
 
-The [main README](../README.md) covers installation and commands.
+The [project README](../README.md) provides a short overview. See also
+[research background](background.md) and [planned additions](roadmap.md).
 
 ## Reading order
 
@@ -46,7 +65,7 @@ The notation below is shared across the guide.
 | **Frame** | One snapshot in time. A sample is several frames of the same patch. |
 | **Patch / window** | The 128 × 128 grid the model sees. "Window" also includes its frames. |
 | **Variable** | One field the model represents, e.g. SSH or SST, listed in the config's `variables`. |
-| **Model units** | Data shifted and scaled to have typical magnitudes of order one. See the root README, [Units and scaling](../README.md#units-and-scaling). |
+| **Model units** | Data shifted and scaled to have typical magnitudes of order one. See [Units and scaling](quickstart/units.md). |
 | **Noise level σ** | The standard deviation of the Gaussian noise added to a sample, in model units. |
 | **Denoiser** | The network: given a noisy sample and σ, it estimates the clean sample (its conditional mean, approximately). |
 | **Prior** | The distribution of ocean states the model has learned. Sampling it without observations gives "prior samples". |
@@ -67,7 +86,7 @@ there, `t` indexes the diffusion process, not physical time.
 | Symbol | Meaning |
 |---|---|
 | `u` | State in physical units (m, °C). |
-| `x = N(u)` | State in model units (the normalization, root README). |
+| `x = N(u)` | State in model units (see [Units and scaling](quickstart/units.md)). |
 | `τ_i` | Physical timestamp of frame `i`. |
 | `σ` | Diffusion noise standard deviation, in model units. |
 | `ε ~ N(0, I)` | Standard Gaussian noise. |
@@ -108,3 +127,47 @@ channels are its variables.
 - Ronneberger, Fischer & Brox (2015), *U-Net*. The network shape.
 - Ho et al. (2022), *Video Diffusion Models*. Spatial layers plus temporal
   attention, the pattern used for frames here.
+
+## Repository structure
+
+<details>
+<summary>Expand the directory and module reference</summary>
+
+```
+src/obottle_starter/
+  core/                shared by training and inference
+    nn/                  SongUNet + EDMPrecond (from NVIDIA cBottle)
+    config.py            variables list, config checks, legacy translation
+    model.py             build_model, load_checkpoint, export_checkpoint
+    obs_conditioning.py  observations as network inputs (conditional models)
+    normalization.py     physical units <-> model units
+    conditioning.py      frame times -> the network's time inputs
+  training/            training a model
+    data.py              PatchDataset (per-patch zarr), StructuredDataset, SyntheticDataset
+    train.py             training loop (single GPU or DDP), start modes
+    validation.py        held-out denoising loss by variable and noise level
+    obs_simulation.py    synthetic observations for conditional models
+  inference/           reconstructing fields with SDA
+    assimilate.py        one call from observations to a posterior ensemble
+    osse.py              OSSE tiles, windows, random masks
+    metrics.py           errors, spread/skill, ranks, coverage, spectra, coherence
+    general.py           assimilate_general: general linear observations, physical units (opt-in)
+    sda/                 MMPS, Rozet and CFG guidance, Krylov solvers, DDIM, observation operators
+                         (masks: observations.py; points, averages, footprints, covariances: operators.py)
+  cli.py               config loading for the scripts
+data/                  SST climatology used by the released models' normalization
+configs/               train_base.yaml (every training option) + experiment presets; sda.yaml
+scripts/               train.py, run_sda.py; maintainer/ prepares model and data downloads
+docs/                  background: network, training, data, SDA, extensions, conditional models, literature
+examples/              notebooks 01-05 (pretrained SDA, small training, general observations,
+                         conditional models and CFG, sliding windows)
+  figures/             README figures and the script that draws them
+tests/
+```
+
+</details>
+
+Model development belongs in `core/` and `training/`; assimilation belongs
+in `inference/`. `core/` does not import either module. Main functions such
+as `load_checkpoint` and `assimilate` are also available from
+`obottle_starter`.

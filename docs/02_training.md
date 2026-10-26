@@ -7,7 +7,7 @@ how to judge whether a model is learning useful ocean statistics.
 
 For a first experiment, [notebook 02](../examples/02_train_small.ipynb) trains
 a small model on generated fields. The commands for real data are in the
-[main README](../README.md#train-a-model).
+[training guide](quickstart/training.md).
 
 ## Training objective
 
@@ -80,7 +80,7 @@ setup. All defaults are described in `configs/train_base.yaml`.
 | `lr`, `lr_rampup_steps` | Adam learning rate, reached after a linear warm-up | the default 2e-4 works for SongUNet |
 | `num_steps` | Total steps | the released models used 195k–315k |
 | `time_sampling_mode` and its keys | How far apart frames are (page 3) | match it to the spacing you will assimilate |
-| `variables` | Which fields, their units, preprocessing and normalization (root README, [Units and scaling](../README.md#units-and-scaling)) | change for new data; config only, no code |
+| `variables` | Which fields, their units, preprocessing and normalization ([Units and scaling](quickstart/units.md)) | change for new data; config only, no code |
 
 ## Weight averaging (EMA)
 

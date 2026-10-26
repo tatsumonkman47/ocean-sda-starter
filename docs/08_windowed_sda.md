@@ -13,7 +13,7 @@ and what remains approximate.
 For a worked comparison, [notebook 05](../examples/05_sliding_windows.ipynb)
 reconstructs 20 frames (9.5 days) using sliding windows and independent
 five-frame blocks. You will need the
-[released models and example data](../README.md#download-models-and-example-data)
+[released models and example data](quickstart/downloads.md)
 and a GPU. The commands below provide a shorter starting point.
 
 ## Choosing how to reconstruct a long period
@@ -196,7 +196,7 @@ work.
 ### Python
 
 After loading `net`, `cfg`, and `names` as in the
-[README example](../README.md#python), request a longer sequence from the
+[Python example](quickstart/inference.md#python), request a longer sequence from the
 tile. The timestamps, masks, and truth (or real observations `y`) must all
 cover the same frames.
 

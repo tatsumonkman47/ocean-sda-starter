@@ -167,7 +167,7 @@ actual first-to-last span of a sample is at most that, and usually less.
 ## Matching units and grids during reconstruction
 
 The normalization a model was trained with is saved in the checkpoint and
-reused automatically (root README, [Units and scaling](../README.md#units-and-scaling)).
+reused automatically ([Units and scaling](quickstart/units.md)).
 
 Grid spacing must also match: the released models were trained on 4 km AEQD tiles, and
 the OSSE tiles are on the same kind of grid. If you assimilate data on a
