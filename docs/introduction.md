@@ -19,7 +19,7 @@ For a detailed introduction aimed at fellow newcomers, see
 **two independent models: one for SSH and one for SST**. This repository
 builds on that work with several upgrades, including a joint SSH/SST model.
 
-The [demonstration plots in the README](../README.md#demonstration-plots) illustrate generation
+The [demonstration plots in the README](../README.md#diffusion-models-and-posterior-sampling-for-ocean-state-reconstruction) illustrate generation
 with and without observations. The diagrams below explain how the model
 is trained and how observations guide sampling.
 
@@ -41,7 +41,7 @@ ocean fields. See [Training](02_training.md).
 Start from Gaussian noise and repeatedly denoise while lowering
 $\sigma$. At each step, the model predicts a clean field $\hat{x}_0$,
 and the sampler updates the noisy state $x_\tau$. In the
-[first demonstration](../README.md#demonstration-plots), these appear in the bottom
+[first demonstration](../README.md#diffusion-models-and-posterior-sampling-for-ocean-state-reconstruction), these appear in the bottom
 and top panels, respectively.
 
 ## Data assimilation: incorporate observations
