@@ -37,6 +37,19 @@ window:
   stride: 1                     # use every stride-th tile frame
   origin: null                  # [row, col] of the window corner; null = centred
 
+# Sequences longer than the model's window (docs/08_windowed_sda.md): the whole
+# sequence is assimilated at once by running the prior on overlapping windows
+# (Rozet & Louppe 2023). Unconditional priors only. Cost per step grows with
+# the number of windows, (frames - time_length) / step + 1.
+sliding:
+  frames: null                  # tile frames to assimilate; null = the model's
+                                #   time_length (one window, no sliding)
+  step: 1                       # frames between window starts: 1 = Rozet & Louppe;
+                                #   time_length = independent blocks (a baseline).
+                                #   (frames - time_length) must be a multiple of it
+  window_batch: null            # most windows per network call (lowers peak memory);
+                                #   null = all at once
+
 # An OSSE: the observed values always come from the tile's simulated truth
 # (plus instrument noise). Only where they are observed changes.
 observations:
@@ -76,9 +89,12 @@ mmps:                           # used when guidance.method = mmps
   iterations: 4                 # Krylov iterations (network backwards) per step
 
 rozet:                          # used when guidance.method = rozet
-  gamma: 0.01                   # likelihood variance = sigma_y^2 + gamma * sigma_t^2
+  gamma: 0.1                    # likelihood variance = sigma_y^2 + gamma * sigma_t^2
                                 #   (model units). Smaller = stronger guidance at every
-                                #   step. 0.01 is Rozet & Louppe's default, not tuned here.
+                                #   step. Rozet & Louppe's code uses 0.01 together with
+                                #   Langevin corrector steps; this DDIM sampler has none,
+                                #   and 0.01 diverged for the released joint model, 0.1
+                                #   did not (docs/04_inference_sda.md). A tuning parameter.
 
 classifier_free:                # used when guidance.method = cfg
   weight: 1.5                   # w: 1 = plain conditional model; > 1 pushes harder

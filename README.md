@@ -1,126 +1,58 @@
 # ocean-sda-starter
 
-Diffusion priors for sea-surface height (SSH) and temperature (SST), and
-score-based data assimilation (SDA) that conditions them on sparse, noisy
-observations. This is a small, self-contained starting point. It can:
+> **Work in progress — use with caution.** This repository, including its
+> documentation, was organized and adapted from existing research code with
+> the help of AI coding agents (Claude and Codex). Code and explanations may
+> contain errors or incomplete validation; review and test them for your
+> application. Contributions, corrections, and feedback are welcome.
 
-* **run SDA with pretrained priors** on bundled OSSE (observing system
-  simulation experiment) tiles: llc4320 truth, observed where real SWOT,
-  nadir-altimeter and ACSPO instruments saw the ocean (the observed values
-  come from the simulation);
-* **train your own `SongUNet` prior** on 128×128 llc4320 patches, on your
-  own data in the same layout, or on generated structured fields that need
-  no data files.
+**A tutorial and reusable foundation for diffusion-based field reconstruction.**
+This repository provides training, data-loading, and posterior-sampling
+workflows that you can adapt to your own variables, datasets, and scientific
+applications.
 
-The network is cBottle's EDM-preconditioned `SongUNet` (NVIDIA), adapted for
-ocean patches with temporal attention over irregularly spaced frames. The
-SDA uses Moment Matching Posterior Sampling (MMPS; Rozet et al., 2024) on a
-DDIM sampler, built on a vendored subset of
-[azula](https://github.com/probabilists/azula).
+The included joint sea-surface height (SSH) and temperature (SST) model
+serves primarily as a **worked demonstration** of those workflows. The
+repository is intended to support efforts beyond that particular model,
+including new oceanographic and other geophysical reconstruction problems.
 
-**New to diffusion models or SDA?** [`docs/`](docs/README.md) explains the
-network, training, data loading, inference methods and possible extensions,
-at the level of a first-year graduate student.
+I built it with help from Claude and Codex to make it easier to learn these
+methods, run an example, and develop your own experiments from a common
+starting point.
 
-## How it works
+**Start here:** [Getting started](#getting-started) · [Install](#install) ·
+[Download models and data](#download-models-and-example-data)
 
-The figures below are illustrations: they use a Gaussian random field with
-an SSH-like spectrum in place of llc4320 and a closed-form denoiser in place
-of the trained network, but the sampling steps are the same.
-`examples/figures/make_sketches.py` regenerates them.
+**Explore:** [Reconstruct fields](#reconstruct-fields-from-observations) ·
+[Train a model](#train-a-model) · [Documentation](docs/README.md) ·
+[Planned additions](#planned-additions)
 
-**Training the prior.** A training patch $x_0$ is corrupted with Gaussian
-noise of a random level $\sigma$, and the network $D_\theta$ learns to
-recover $x_0$ from the noisy patch $x_\sigma$. Doing this across all noise
-levels teaches it what ocean fields look like
-([docs page 2](docs/02_training.md)).
+## Getting started
 
-![Training: a patch is noised, the denoiser estimates the clean patch, and the loss compares the estimate with the original](examples/figures/a_training.png)
+To begin, start with a quick check of the training pipeline, then train a small model
+or try pretrained SDA. The training examples need no data download;
+pretrained SDA requires the
+[models and example data](#download-models-and-example-data) and a GPU.
 
-**Sampling from the prior.** Generation starts from pure noise and applies
-the denoiser repeatedly while lowering $\sigma$. At each step the network
-predicts a clean field $\hat{x}_0$ (bottom), and the sampler moves the
-noisy state $x_\tau$ (top) a little towards it. Large scales appear first,
-fine scales last.
-
-![Unconditional denoising: the noisy state and the denoised estimate as the noise level falls](examples/figures/b_unconditional.gif)
-
-<details><summary>Still frames</summary>
-
-![Unconditional denoising, six still frames](examples/figures/b_unconditional_strip.png)
-
-</details>
-
-**Data assimilation (SDA).** Assimilating observations with a trained
-diffusion prior is spreading quickly through ocean and atmospheric science,
-usually under the name score-based data assimilation (SDA; Rozet &
-Louppe, 2023). SDA builds on Diffusion Posterior Sampling (DPS; Chung et
-al., 2023): sample the posterior $p(x \mid y)$ with a prior that was
-trained without any observations, using Bayes' rule for scores,
-$\nabla \log p(x_\tau \mid y) = \nabla \log p(x_\tau) + \nabla \log p(y \mid x_\tau)$.
-The first term is what the network has learned; the second, the
-likelihood score, pulls each step towards the observations. It cannot be
-computed exactly, because the observations constrain the clean state, not
-the noisy $x_\tau$, and the methods differ in how they approximate it. DPS
-treats the denoised estimate $\hat{x}_0$ as if it were exact. Rozet &
-Louppe add a variance that grows with the noise level. Finzi et al. (2023)
-and Boys et al. (2024) take the uncertainty of $\hat{x}_0$ from the
-denoiser's own Jacobian (Tweedie's formula for the covariance), and MMPS
-(Rozet et al., 2024), used here, makes that affordable for large states by
-solving with a few Krylov iterations instead of forming the Jacobian.
-
-In each case, every step compares the prediction with the observations
-$y$: the observation operator $H$ picks out what the instruments would
-have seen, and the residual $y - H(\hat{x}_0)$ becomes the likelihood score
-that steers the next step. The result is a sample that matches the
-observations along the swaths and fills the gaps with structure learned by
-the prior. Repeating from different noise gives an ensemble. Because the
-observations enter only at sampling, one prior serves any observing
-system: other swaths, other instruments, another $\sigma_y$
-([docs page 4](docs/04_inference_sda.md)). For applications to satellite
-ocean observations, see Martin et al. (2025, 2026), Monkman et al. (2026)
-and the other examples on [docs page 7](docs/07_literature.md#applications-to-geophysical-data-assimilation).
-
-![SDA loop: from pure noise, denoise, compare with observations, apply the likelihood score, step, and repeat until the posterior sample](examples/figures/c_sda_loop.png)
-
-![SDA-steered denoising on two crossing SWOT passes](examples/figures/c_sda.gif)
-
-<details><summary>Still frames</summary>
-
-![SDA-steered denoising, six still frames with the observations and the truth](examples/figures/c_sda_strip.png)
-
-</details>
-
-## Your first afternoon
-
-A route through the repository, in order. Each step says what it needs and
-what a successful run looks like. Steps 1-4 need neither the data bundle
-nor a GPU (a GPU makes step 3 much faster); steps 5-6 need both.
-
-| Step | Run | Needs | Success looks like |
-|---|---|---|---|
-| 1. Install and test | [Install](#install), then `python -m pytest` | CPU, ~2 min | `111 passed, 2 skipped`; the 2 skipped tests are the checkpoint checks ([Data bundle](#data-bundle)) |
-| 2. Smoke test | `python scripts/train.py config=configs/train_smoke_test.yaml` | CPU, ~1 min | `step ... loss ...` lines, then `runs/smoke_test/checkpoints/checkpoint_latest.pt`. White noise: the loss does not need to fall. |
-| 3. Train on structured fields | `examples/02_train_small.ipynb` | CPU (a few min) or GPU | The loss and the validation loss fall; samples are smooth blobs, not noise |
-| 4. Inspect samples | the last cells of notebook 02 | as step 3 | Members differ from each other but look like the training fields in notebook 02's first plot |
-| 5. Pretrained SDA | `examples/01_prior_and_sda.ipynb` (or `scripts/run_sda.py`, [Run SDA](#run-sda)) | bundle, GPU, ~10 min | Posterior RMSE well below the truth std (MidAtlantic window: SSH 0.028 m against 0.073 m, SST 0.10 °C against 0.60 °C); members match the observations and differ between the swaths |
-| 6. Choose an extension | one of the rows below | | |
-
-| Extension | Start here | Needs |
+| Task | Command or notebook | Expected result |
 |---|---|---|
-| Conditional models and classifier-free guidance | `examples/04_conditional_and_cfg.ipynb`, [docs page 6](docs/06_conditional_models.md) | GPU (~20 min); no bundle |
-| Observations that are not pixels (averages, tracks, footprints, correlated errors) | `examples/03_general_observations.ipynb` | bundle, GPU |
-| Your own data or variables | [Data layout](#data-layout), [Units and normalization](#units-and-normalization), [docs page 3](docs/03_data_loading.md) | your data, GPU |
-| Network and training changes | [docs pages 1, 2 and 5](docs/README.md) | GPU |
+| Install and test | Follow [Install](#install), then run `python -m pytest` | Tests pass; two checkpoint tests are skipped unless enabled |
+| Check the training pipeline | `python scripts/train.py config=configs/train_smoke_test.yaml` | Writes `runs/smoke_test/checkpoints/checkpoint_latest.pt` in about a minute on CPU. This uses white noise, so loss need not decrease. |
+| Train a small model | `examples/02_train_small.ipynb` | Training and validation losses decrease; generated samples resemble the structured training fields. Runs on CPU or GPU. |
+| Run pretrained SDA | `examples/01_prior_and_sda.ipynb` or [the command-line example](#reconstruct-fields-from-observations) | Reconstructs fields from sparse observations and evaluates errors. Allow about 10 minutes on a GPU. |
 
-Notebook 04 ends with a table of experiments and the files each one
-changes, including two that need new code (giving the model the
-observation-noise level, or context such as wind).
+### Choose an extension
+
+| Task | Start here | Requirements |
+|---|---|---|
+| Conditional models and classifier-free guidance (CFG) | `examples/04_conditional_and_cfg.ipynb`, [Conditional models](docs/06_conditional_models.md) | GPU (~20 min); no download needed |
+| Tracks, averages, footprints, or correlated observation errors | `examples/03_general_observations.ipynb` | Downloaded models and example data; GPU |
+| Your own data or variables | [Training data format](#training-data-format), [Units and scaling](#units-and-scaling), [Data loading](docs/03_data_loading.md) | Your data and GPU |
+| Network or training changes | [Documentation](docs/README.md), pages 1, 2, and 5 | GPU |
 
 ## Install
 
-Python ≥ 3.10 and PyTorch ≥ 2.1. Clone the repository and install it in
-editable mode (`-e`) into a fresh environment:
+Requires Python ≥ 3.10 and PyTorch ≥ 2.1. Install in a fresh environment:
 
 ```bash
 git clone https://github.com/tatsumonkman47/ocean-sda-starter.git && cd ocean-sda-starter
@@ -129,13 +61,13 @@ pip install -e '.[examples,dev]'
 python -m pytest              # ~2 min on CPU
 ```
 
-The Python package is `obottle_starter` (`import obottle_starter as obs`;
-the name comes from cBottle, the network's origin). Keep the repository in
-place after installing: the code finds `data/` relative to it.
+Import the package as `obottle_starter`. Keep the repository in place after
+installation: the code locates `data/` relative to it.
 
-**The tested environment.** `requirements-tested.txt` lists the exact
-versions with which the tests and all four notebooks last passed
-(2026-10-26: Python 3.13, PyTorch 2.14.1, NVIDIA L40S). To reproduce it, install those first:
+### Tested environment
+
+**Python 3.13, PyTorch 2.14.1, and NVIDIA L40S**
+(2026-10-26). To use the dependency versions tested with all four notebooks:
 
 ```bash
 pip install -r requirements-tested.txt && pip install -e '.[examples,dev]'
@@ -147,9 +79,10 @@ install the PyTorch build for your CUDA version from
 [pytorch.org](https://pytorch.org/get-started/locally/) and then the
 package. The tests run on CPU.
 
-## Data bundle
+## Download models and example data
 
-The checkpoints and OSSE tiles are too large for the repository. They are
+The saved models (checkpoints) and simulated observation datasets (OSSE
+tiles) are too large for the repository. They are
 attached to the
 [`data-v1` release](https://github.com/tatsumonkman47/ocean-sda-starter/releases/tag/data-v1).
 From the repository root:
@@ -165,14 +98,15 @@ done
 curl -L -O $URL/training_patches.zip && unzip training_patches.zip && rm training_patches.zip
 ```
 
-That leaves **the three directories in the repository root**, next to
-`src/` and `configs/`:
+### Where to put the files
+
+Place the downloaded directories in the repository root:
 
 ```
 ocean-sda-starter/
   checkpoints/
-    joint_ssh_sst_T5.pt      joint SSH + SST prior, 5 frames      (95 MB)
-    ssh_only_T11.pt          SSH-only prior, 11 frames            (95 MB)
+    joint_ssh_sst_T5.pt      joint SSH + SST model, 5 frames      (95 MB)
+    ssh_only_T11.pt          SSH-only model, 11 frames            (95 MB)
   osse_tiles/
     MidAtlantic_35N_50W.nc   336x336 cells (4 km), 24 frames, 12-hourly (16 MB each)
     NorthAtlantic_48N_30W.nc
@@ -181,24 +115,25 @@ ocean-sda-starter/
   src/ configs/ examples/ ...
 ```
 
-The notebooks look for them there (`BUNDLE = Path("..")` from `examples/`),
-and the commands in this README use these relative paths. Git ignores all
-three. To keep the bundle elsewhere, symlink the directories into the
-repository root (`ln -s /path/to/bundle/checkpoints .`), or set `BUNDLE` in
-the notebooks and pass full paths to the scripts.
+The notebooks use `BUNDLE = Path("..")` to find these directories from
+`examples/`. Git ignores all three directories. To store the downloads
+elsewhere, create symbolic links in the repository root (for example,
+`ln -s /path/to/bundle/checkpoints .`), or update `BUNDLE` in the notebooks
+and pass full paths to the scripts.
 
-**Checkpoint tests are opt-in.** Placing the bundle does not change what
-`python -m pytest` runs. To also check that both checkpoints reproduce the
-original training-code network, point `OBOTTLE_CHECKPOINTS` at the
-checkpoint directory:
+### Verify the downloaded models
+
+**These tests must be enabled explicitly.** To check that both checkpoints
+reproduce the original training-code network, run:
 
 ```bash
 OBOTTLE_CHECKPOINTS=checkpoints python -m pytest
 ```
 
-Without it, those two tests are reported as skipped.
+Without this environment variable, the two checkpoint tests are skipped,
+even if the models have been downloaded.
 
-### The pretrained models
+### Available models
 
 | | `joint_ssh_sst_T5` | `ssh_only_T11` |
 |---|---|---|
@@ -210,47 +145,217 @@ Without it, those two tests are reported as skipped.
 | steps | 315k (batch 130) | 195k (batch 60) |
 | parameters | 23.7 M | 23.7 M |
 
-**SSH** is llc4320 sea-surface height with scales longer than 300 km
-removed, in metres, normalized by 0.051 m. **SST** is in °C. A North Pacific
-basin-mean daily climatology is subtracted, then the result is divided by
-5.5 °C. Normalization is applied for you: `assimilate`, the scripts and the
-OSSE helpers take and return physical units. (The low-level classes in
-`obottle_starter.inference.sda` work in the units of their inputs, normally
-model units.) See [Units and normalization](#units-and-normalization).
+### Variables, units, and supported dates
 
-The released models look the SST climatology up by days since its first
-day (2011-09-13), so they only accept dates inside its record, 2011-09-13
-to 2012-09-23; other dates are an error unless you choose another rule
-(`normalization.climatology.lookup=day_of_year`, or `out_of_range=clip`).
+- **SSH:** llc4320 sea-surface height with scales longer than 300 km removed,
+  in metres, normalized by 0.051 m.
+- **SST:** temperature in °C, with a North Pacific basin-mean daily climatology
+  subtracted and the result divided by 5.5 °C.
+
+**Unit conversion is automatic:** `assimilate`, the scripts, and the OSSE
+helpers take and return physical units. The low-level classes in
+`obottle_starter.inference.sda` use the units of their inputs, normally model
+units. See [Units and scaling](#units-and-scaling).
+
+**Supported dates:** the released SST normalization looks up the climatology
+by elapsed days from 2011-09-13. Dates outside **2011-09-13 through 2012-09-23**
+raise an error unless you set `normalization.climatology.lookup=day_of_year`
+or `normalization.climatology.out_of_range=clip`.
 
 The OSSE tiles are in the Atlantic, so they also test transfer from the
 Pacific training region.
 
-## Run SDA
+## What you can do
 
-Command line (defaults in `configs/sda.yaml`):
+### Reconstruct fields with a pretrained model
+
+**Score-based data assimilation (SDA)** steers a pretrained diffusion model
+using observations at sampling time. Here, we reconstruct joint SSH/SST
+fields from synthetic observations derived from the MITgcm llc4320 simulation.
+
+Diffusion posterior sampling methods modify the generated trajectory using
+the **likelihood score**, so fields satisfy soft constraints such as agreement
+with noisy observations. This follows from a Bayesian decomposition of the
+conditional diffusion process and uses automatic differentiation through the
+network. See [Chung et al. (2023)](https://arxiv.org/abs/2209.14687),
+[Rozet and Louppe (2023)](https://arxiv.org/abs/2306.10574), and
+[Rozet et al. (2024)](https://arxiv.org/abs/2405.13712).
+
+For a detailed introduction aimed at fellow newcomers, see
+[my preprint](https://doi.org/10.22541/essoar.15003398/v3). That study evaluates
+**two independent models: one for SSH and one for SST**. This repository
+builds on that work with several upgrades, including a joint SSH/SST model.
+
+### Train a new model
+
+The training example uses **128 × 128 llc4320 patches**, with a data loader
+and configuration that can be adapted to other geophysical settings.
+
+- **Try the workflow:** train on generated synthetic fields without downloading data.
+- **Use your own data:** replace the input datasets and configure their units and normalization.
+- **Develop a scientific application:** pay particular attention to data loading,
+  normalization, and evaluation to use your GPUs efficiently and represent your fields accurately.
+
+### Model and sampling method
+
+- **Network:** NVIDIA cBottle's EDM-preconditioned `SongUNet`, with temporal
+  attention added for irregularly spaced ocean time series.
+- **Reconstruction:** Moment Matching Posterior Sampling
+  (MMPS; [Rozet et al., 2024](https://arxiv.org/abs/2405.13712)), with a DDIM
+  sampler and a vendored subset of [azula](https://github.com/probabilists/azula).
+
+## Intro to diffusion models and score-based data assimilation
+
+Below are some cartoon illustrations of both "unconditional" (here referring to generation without posterior-steering)
+and SDA-steered diffusion model generation.
+In both cases we begin with a Gaussian random field and are targeting a "truth" field with a SSH-like spectrum.
+
+### Training: learn to remove noise
+
+Add Gaussian noise at a random level $\sigma$ to a clean
+patch $x_0$. Train the denoiser $D_\theta$ to recover the original patch.
+Repeating this across noise levels teaches the model the distribution of
+ocean fields. See [Training](docs/02_training.md).
+
+<p align="center">
+  <img src="examples/figures/a_training.png" alt="Training: a patch is noised, the denoiser estimates the clean patch, and the loss compares the estimate with the original">
+  <br>
+  <em>Figure 1. Training the network to recover a clean field from a noisy input.</em>
+</p>
+
+### Sampling: generate a field
+
+Start from Gaussian noise and repeatedly denoise while lowering
+$\sigma$. At each step, the model predicts a clean field $\hat{x}_0$
+(bottom), and the sampler updates the noisy state $x_\tau$ (top).
+
+<p align="center">
+  <img src="examples/figures/b_unconditional.gif" alt="Unconditional denoising: the noisy state and the denoised estimate as the noise level falls">
+  <br>
+  <em>Figure 2. Generating a field without observations. The noisy state (top) and predicted clean field (bottom) evolve as noise decreases.</em>
+</p>
+
+<details><summary>Still frames</summary>
+
+<p align="center">
+  <img src="examples/figures/b_unconditional_strip.png" alt="Unconditional denoising, six still frames">
+</p>
+
+</details>
+
+### Data assimilation: incorporate observations
+
+SDA combines a trained model (the "prior") with
+observations to generate reconstructions. Each step compares the model's
+prediction with the observations and uses the difference to guide the next
+update.
+
+**Accounting for uncertainty.** MMPS estimates uncertainty in the denoised
+prediction from the network's derivatives. This makes the observation update
+more expensive than using a prescribed variance, but allows it to depend on
+the model's prediction. The alternative `rozet` guidance uses
+[Rozet and Louppe (2023)](https://arxiv.org/abs/2306.10574)'s variance heuristic.
+
+**Reconstructing gaps and uncertainty.** The resulting samples reconstruct unobserved regions by sampling from the model's learned prior.
+Different initial noise produces a set of possible
+reconstructions (an ensemble). Because observations enter at sampling time, the same model can support different
+observation patterns, instruments, and error levels. See
+[Inference and SDA](docs/04_inference_sda.md) for the equations and methods,
+and [the literature guide](docs/07_literature.md#applications-to-geophysical-data-assimilation)
+for ocean applications.
+
+<p align="center">
+  <img src="examples/figures/c_sda_loop.png" alt="SDA loop: from pure noise, denoise, compare with observations, apply the likelihood score, step, and repeat until the posterior sample">
+  <br>
+  <em>Figure 3. The reconstruction cycle: denoise, compare with observations, update, and repeat.</em>
+</p>
+
+<p align="center">
+  <img src="examples/figures/c_sda.gif" alt="SDA-steered denoising on two crossing SWOT passes">
+  <br>
+  <em>Figure 4. Reconstructing a field from two crossing SWOT passes. Observations guide the model as noise decreases.</em>
+</p>
+
+<details><summary>Still frames</summary>
+
+<p align="center">
+  <img src="examples/figures/c_sda_strip.png" alt="SDA-steered denoising, six still frames with the observations and the truth">
+</p>
+
+</details>
+
+### Comparing posterior-sampling methods
+
+DPS neglects uncertainty in the denoised estimate; Rozet and Louppe's
+heuristic prescribes it; **MMPS estimates it from the denoiser**. These choices
+can produce different sampling trajectories, even with the same initial
+noise and observation. See [the method comparison](docs/04_inference_sda.md#three-ways-to-handle-the-uncertainty)
+for the equations and limitations.
+
+<details>
+<summary>Figure 5 — DPS, SDA guidance, and MMPS in a one-dimensional example</summary>
+
+<p align="center">
+  <img src="docs/figures/mmps_vs_SDA_vs_DPS.png" alt="One-dimensional example comparing unconditional, DPS, SDA heuristic, and MMPS trajectories from the same noisy state toward an observation">
+  <br>
+  <em>Figure 5. Read from right to left, from the noisy state to the reconstruction. The curves illustrate one observation and one choice of settings, not a general ranking of the methods. The SDA curve uses gamma = 1; this repository defaults to 0.1.</em>
+</p>
+
+</details>
+
+### Longer time series with sliding windows
+
+**A model trained on short sequences can reconstruct a longer period.**
+Following [Rozet and Louppe (2023)](https://arxiv.org/abs/2306.10574), we run
+one diffusion process over the full sequence. At each step, overlapping
+short windows are denoised and their central predictions assembled into a
+full-sequence estimate, with special handling at the endpoints.
+
+This reuses the trained model without averaging independently generated
+sequences. The current implementation supports unconditional priors;
+accuracy depends on how well local windows represent the longer sequence.
+See [Sliding windows](docs/08_windowed_sda.md) for commands, memory costs,
+and validation checks. This extends the reconstruction in **time**;
+spatial tiling is a separate method.
+
+<details>
+<summary>Figure 6 — How overlapping temporal windows form a long-sequence prediction</summary>
+
+<p align="center">
+  <a href="docs/figures/rozet_sliding_window.pdf"><img src="docs/figures/rozet_sliding_window.png" alt="Sliding-window construction: physical time runs vertically, while successive denoising steps move horizontally from noise to reconstructed fields"></a>
+  <br>
+  <em>Figure 6. Physical time runs vertically; denoising progresses horizontally. Overlapping windows provide local predictions at each step of the full-sequence sampling process. Click the figure for the original PDF.</em>
+</p>
+
+</details>
+
+## Reconstruct fields from observations
+
+### Command line
+
+Run from the repository root. Defaults are in `configs/sda.yaml`:
 
 ```bash
 python scripts/run_sda.py ckpt=checkpoints/joint_ssh_sst_T5.pt \
     tile=osse_tiles/MidAtlantic_35N_50W.nc output=out/mid_atlantic.nc
 
-# variations
+# Append these overrides to the command above (replace the leading ...).
 ... observations.observe='[SSH]'                 # observe SSH only
 ... observations.mode=random                     # Bernoulli masks instead of instrument coverage
 ... observations.mode=none                       # prior samples
 ... observations.sigma_y.SSH=0.01 mmps.iterations=8 sampler.steps=128
-... guidance.method=rozet rozet.gamma=0.01         # Rozet & Louppe (2023) heuristic
+... guidance.method=rozet rozet.gamma=0.1          # Rozet & Louppe (2023) heuristic
 ... window.t_start=6 window.origin='[50,180]'     # another window of the tile
 ```
 
-The output netCDF holds `samples` (sample, channel, time, row, col),
-`truth`, `mask` and `observations` (the values used, NaN elsewhere), in
-physical units, with latitude and longitude. The run prints diagnostics:
-errors at observed and unobserved pixels, spread against error, interval
-coverage and the observation misfit (`inference/metrics.py`). Options are
-checked before anything runs; a misspelled option is an error.
+**Output and diagnostics.** The output netCDF contains `samples` with dimensions
+`(sample, channel, time, row, col)`, plus `truth`, `mask`, and `observations`
+(NaN outside the mask). Fields use physical units and include latitude and
+longitude. The script reports reconstruction errors, ensemble spread,
+interval coverage, and observation misfit. Invalid options are rejected
+before inference starts.
 
-Python:
+### Python
 
 ```python
 import obottle_starter as obs
@@ -270,40 +375,47 @@ post = obs.assimilate(
 post.samples.mean("sample")           # xarray, physical units
 ```
 
-For real observations, pass `y={channel: (T, H, W) values}` instead of
+**Using real observations:** pass `y={channel: (T, H, W) values}` instead of
 `truth`. Only values on `masks` are used. `examples/01_prior_and_sda.ipynb`
-walks through prior samples, posteriors, errors and spectra.
+walks through generated fields, observation-based reconstructions, errors,
+and spectra.
 
-### Knobs that matter
+### Settings
 
-| option | meaning |
+| Option | Meaning |
 |---|---|
-| `sigma_y` | observation-error std the guidance assumes (m, °C); required. Smaller fits the data harder. |
+| `sigma_y` | Required observation-error standard deviation (m, °C). Smaller values enforce closer agreement with observations. |
 | `instrument_noise` | noise added to the synthetic observations (default: `sigma_y`) |
 | `steps` | DDIM steps from σ = 200 down to 2e-4 |
-| `mmps_iterations` | Krylov iterations per step, one network backward each. Cost grows roughly linearly. |
+| `mmps_iterations` | Krylov iterations per step, each requiring a network backward pass. Cost grows roughly linearly. |
 | `mmps_solver` | `gmres` (default), `cg`, `minres` |
 | `guidance`, `rozet_gamma` | `mmps` (default) or `rozet`: a fixed uncertainty `γ σ_t²` instead of the network's, no linear solve, one backward pass per step |
 | `guidance="conditional"` / `"cfg"`, `cfg_weight` | for conditional models only (experimental; `docs/06_conditional_models.md`) |
 | `n_members`, `n_batch` | ensemble size; members per GPU batch |
 
-The Python defaults equal `configs/sda.yaml` (`inference/sda/defaults.py`;
-a test keeps them identical). They are starting points: check that results
-stop changing when you increase `steps` or `mmps_iterations`.
+Python defaults match `configs/sda.yaml`. Check result stability by increasing
+`steps` or `mmps_iterations` until results stabilize.
+
+### Expected runtime
 
 Measured on one L40S with 64 steps and 4 iterations, 4 members per batch:
 2.2 s per step for the joint 5-frame model (about 2.5 min per batch) and
 5.2 s per step for the SSH-only 11-frame model.
 
-## Units and normalization
+## Units and scaling
 
-The network is trained, and SDA is solved, in **model units**. You work in
-**physical units** (m, °C). A `Normalizer` converts between them with one
-affine map per channel, `x_model = (x - offset(t)) / scale`.
+The main Python functions use **physical units** (m, °C); training and SDA use
+**model units**, scaled for the network. `Normalizer` converts each variable
+using:
 
-**The numbers come from the checkpoint.** Training saves its config into
-every checkpoint, and each entry of its `variables` list says how that
-variable is normalized, `x_model = (x - climatology(t) - offset) / scale`:
+```text
+x_model = (x - climatology(t) - offset) / scale
+```
+
+### Settings saved with the model
+
+Normalization settings are stored in the checkpoint's `variables` list.
+For example:
 
 ```yaml
 variables:
@@ -334,10 +446,13 @@ normalization:
   variables: null           # source: config uses this list instead (experiments only)
 ```
 
-Any difference from the checkpoint is printed as a warning. A model only
-gives sensible results with the normalization it was trained with.
+Overrides that differ from the checkpoint trigger a warning. Use the
+training normalization for consistent inference.
 
-**It is always printed and recorded.** `run_sda.py` starts with, for example:
+<details>
+<summary>Example normalization report</summary>
+
+`run_sda.py` prints the normalization at startup, for example:
 
 ```
 normalization (from checkpoint):
@@ -354,26 +469,26 @@ The output netCDF stores the same information in its `normalization_*`
 attributes. Training prints its normalization at startup
 and saves it in `config.yaml` and in every checkpoint.
 
-**Why the solve uses model units.** At every diffusion step, MMPS solves a
-linear system with a few Krylov (GMRES/CG) iterations. The exact answer
-does not depend on units, but a truncated solve reduces the largest
-residuals first. In physical units, an SST residual of several °C dwarfs an
-SSH residual of centimetres. With the joint model and 4 iterations, the SSH
-observations were then effectively ignored: ensemble-mean SSH RMSE was
-0.073 m with physical-unit terms and 0.028 m in model units, on the same
-window. So `assimilate` converts observations, `sigma_y` and instrument
-noise to model units (`Normalizer.observation_terms`,
-`Normalizer.sigma_to_model`). If you build your own observation operator,
-do the same.
+</details>
 
-**Developing your own model.** To add or change a variable, edit the
-`variables` list in your training config: its directory under `data_dir`,
-units, a note on preprocessing (filtering changes what the variable *is*,
-not just its units), and its normalization. No code changes are needed for
-an affine normalization, with or without a climatology. Inference picks it
-up from the checkpoint.
+### Why model units matter
 
-### Beyond the defaults
+MMPS uses a limited number of Krylov
+iterations, which prioritize the largest residuals. In physical units,
+SST residuals can dominate SSH residuals. On the example window with four
+iterations, converting to model units reduced ensemble-mean SSH RMSE from
+0.073 m to 0.028 m. `assimilate` handles this conversion for observations,
+`sigma_y`, and instrument noise. Custom observation operators must use
+consistent units too.
+
+### Adding a variable
+
+Define its field directory, units, preprocessing,
+and normalization in the training config's `variables` list. Affine
+normalization, with or without a climatology, requires no code changes.
+Inference reads these settings from the checkpoint.
+
+### Other observation types
 
 `assimilate` covers per-channel masks. Underneath, `obottle_starter.inference.sda`
 takes any linear observation operator:
@@ -388,15 +503,14 @@ term = ObservationTerm("SSH_smoothed", mask, weights={0: 1.0}, transforms={0: sm
 average. Keep `y` and `sigma_y` in model units, as explained above. See
 `src/obottle_starter/inference/sda/observations.py`.
 
-**General observations (opt-in).** For observations that are not pixels,
-such as off-grid along-track points, coarse cell averages, footprints, time
-averages or combinations of variables, possibly with correlated errors, use
-`assimilate_general`. It takes physical units, like `assimilate`, and leaves
-the mask workflow above unchanged:
+For off-grid points, cell averages, footprints, time averages, combinations
+of variables, or correlated errors, use `assimilate_general`. Like
+`assimilate`, it accepts physical units:
 
 ```python
+import torch
 from obottle_starter.inference.general import assimilate_general
-from obottle_starter.inference.sda.operators import block_average, point_observations
+from obottle_starter.inference.sda.operators import block_average
 
 shape = (2, cfg.time_length, cfg.H, cfg.W)                     # (C, T, H, W)
 coarse = block_average(shape, 0, 16)                            # 64 km means of SSH
@@ -408,7 +522,9 @@ post = assimilate_general(net, cfg, coarse, torch.full((coarse.n_obs,), 0.003**2
 reconstruction, along-track points with correlated errors, and SST
 footprints averaged over two frames.
 
-## Train
+## Train a model
+
+### Example commands
 
 ```bash
 python scripts/train.py config=configs/train_smoke_test.yaml       # 1-min code check (white noise)
@@ -422,29 +538,36 @@ python scripts/train.py ... start=resume num_steps=400000          # continue a 
 torchrun --nproc_per_node=4 scripts/train.py data_dir=...          # multi-GPU (batch_size per GPU)
 ```
 
-**How the configs combine.** `configs/train_base.yaml` lists every option
-with its default and a description of what it does. `scripts/train.py`
-always loads it first. It then merges an optional experiment file
-(`config=configs/train_ssh_only.yaml`), which lists only the options it
-changes, and finally any `key=value` overrides. To make your own
-experiment, copy one of the small experiment files. Options the base file
-does not define are rejected, and the whole config is checked (grid,
-attention levels, variables, noise range, probabilities, start mode) before
-any data is read, with messages that say what to change. The fully merged
-config is saved as `runs/<experiment_name>/config.yaml` and inside every
-checkpoint. Runs write
+### Configure a training run
+
+Training configuration is loaded in this order, with later values taking
+precedence:
+
+1. `configs/train_base.yaml`: all options, defaults, and descriptions.
+2. An optional experiment file, such as `config=configs/train_ssh_only.yaml`.
+3. Command-line `key=value` overrides.
+
+Copy an experiment file to create your own configuration. Unknown options
+and invalid settings are rejected before data loading. Each run saves its
+merged config to `runs/<experiment_name>/config.yaml` and in every
+checkpoint. Checkpoints are written to
 `runs/<experiment_name>/checkpoints/checkpoint_{latest,stepN}.pt`.
 
-**Starting and resuming are explicit** (`start`): `fresh` (default) refuses
-an `output_dir` that already holds a run; `resume` continues it and refuses
-changes to anything but runtime settings such as `num_steps`; `auto`
-resumes if possible, for requeued jobs. `init_from` starts a new run from
-another checkpoint's weights. See `docs/02_training.md`. A trained
-checkpoint works directly with `run_sda.py` and `assimilate`.
-`examples/02_train_small.ipynb` trains a small model and samples it.
-`examples/04_conditional_and_cfg.ipynb` trains a small conditional model
-(`configs/train_structured_conditional.yaml`) and compares conditional
-sampling with CFG at several weights.
+### Start, resume, or initialize from a checkpoint
+
+Use `start` to control run behavior:
+
+- `fresh` (default): starts a new run; rejects an existing run directory.
+- `resume`: continues a run; permits changes only to runtime settings such
+  as `num_steps`.
+- `auto`: resumes if possible, for requeued jobs.
+
+Use `init_from` to start a new run from another checkpoint's weights.
+Trained checkpoints work directly with `run_sda.py` and `assimilate`.
+See [Training](docs/02_training.md) for details, notebook 02 for a small
+training example, and notebook 04 for conditional training and CFG.
+
+### Training cost
 
 Training throughput on one L40S at the released model size: about 9.5
 samples/s for 5 frames (batch 32) and 4.3 samples/s for 11 frames (batch 8).
@@ -452,22 +575,29 @@ The released joint model saw about 41 M samples (315k steps at batch 130),
 which would take weeks on one L40S. To explore, use smaller models
 (`model_channels`, `time_length`) or multiple GPUs.
 
-### Data layout
+### Training data format
 
 ```
 {data_dir}/{field}/{patch_id}.zarr     one store per variable (its `field`) and patch
 ```
 
-Each store has a data variable on `(time, row, col)` (rows south→north,
-columns west→east; the variable's `source_variable`, or the store's only
-one), an hourly `time` coordinate, and 2-D `latitude` / `longitude`. Every
-field must have the same patch ids and times, and values must be finite
-(training stops at the first NaN). Each sample is a random window of
-`time_length` frames from a random patch. The frame offsets follow
-`time_sampling_mode`. To add a variable, add a field directory and an entry
-in `variables`.
+Each Zarr store must contain:
 
-## Layout
+- A data variable with dimensions `(time, row, col)`, with rows ordered
+  south to north and columns west to east. Select it with `source_variable`,
+  or provide a store containing only one data variable.
+- An hourly `time` coordinate and 2-D `latitude` and `longitude` coordinates.
+- Finite values; training stops at the first NaN.
+
+All fields must share the same patch IDs and times. Training samples random
+patches and windows of `time_length` frames, with frame offsets controlled
+by `time_sampling_mode`. To add a variable, add its field directory and an
+entry in `variables`.
+
+## Repository structure
+
+<details>
+<summary>Expand the directory and module reference</summary>
 
 ```
 src/obottle_starter/
@@ -478,12 +608,12 @@ src/obottle_starter/
     obs_conditioning.py  observations as network inputs (conditional models)
     normalization.py     physical units <-> model units
     conditioning.py      frame times -> the network's time inputs
-  training/            developing a prior
+  training/            training a model
     data.py              PatchDataset (per-patch zarr), StructuredDataset, SyntheticDataset
     train.py             training loop (single GPU or DDP), start modes
     validation.py        held-out denoising loss by variable and noise level
     obs_simulation.py    synthetic observations for conditional models
-  inference/           using a prior: SDA
+  inference/           reconstructing fields with SDA
     assimilate.py        one call from observations to a posterior ensemble
     osse.py              OSSE tiles, windows, random masks
     metrics.py           errors, spread/skill, ranks, coverage, spectra, coherence
@@ -493,7 +623,7 @@ src/obottle_starter/
   cli.py               config loading for the scripts
 data/                  SST climatology used by the released models' normalization
 configs/               train_base.yaml (every training option) + experiment presets; sda.yaml
-scripts/               train.py, run_sda.py; maintainer/ builds the data bundle
+scripts/               train.py, run_sda.py; maintainer/ prepares model and data downloads
 docs/                  background: network, training, data, SDA, extensions, conditional models, literature
 examples/              notebooks 01-04 (pretrained SDA, small training, general observations,
                          conditional models and CFG)
@@ -501,12 +631,51 @@ examples/              notebooks 01-04 (pretrained SDA, small training, general 
 tests/
 ```
 
-If you are developing a model, work in `core/` and `training/`. If you are
-assimilating data, work in `inference/`. `core/` never imports from the
-other two. The main functions are also available from the top level
-(`obottle_starter.load_checkpoint`, `obottle_starter.assimilate`, ...).
+</details>
 
-## Provenance
+Model development belongs in `core/` and `training/`; assimilation belongs
+in `inference/`. `core/` does not import either module. Main functions such
+as `load_checkpoint` and `assimilate` are also available from
+`obottle_starter`.
+
+## Planned additions
+
+I intend to update this repository as my projects progress. Planned additions include:
+
+- **Larger-domain reconstruction:** SDA-compatible
+  [MultiDiffusion](https://arxiv.org/abs/2302.08113) and Score-based MultiDiffusion
+  (manuscript in preparation).
+- **EDM2:** the architecture and training strategy of
+  [Karras et al. (2024)](https://arxiv.org/abs/2312.02696).
+- **Conditioning and guidance:** more robust support for classifier-free
+  guidance ([Ho and Salimans, 2022](https://arxiv.org/abs/2207.12598)),
+  AutoGuidance ([Karras et al., 2024](https://arxiv.org/abs/2406.02507)), and
+  methods such as [Ahn et al. (2026)](https://arxiv.org/abs/2610.14136).
+  Thanks to Jacob Spier for suggesting the latter.
+
+## Where this code comes from
+
+### Research background
+
+The code and methods build on:
+
+- **NVIDIA Modulus and cBottle**, including the diffusion architecture of
+  [Karras et al. (2022)](https://arxiv.org/abs/2206.00364).
+- **François Rozet's work** on
+  [score-based data assimilation](https://arxiv.org/abs/2306.10574) and
+  [moment matching posterior sampling](https://arxiv.org/abs/2405.13712).
+- **Geophysical implementations** by
+  [Martin et al. (2025)](https://doi.org/10.1029/2025MS005063) and
+  [Manshausen et al. (2025)](https://arxiv.org/abs/2406.16947).
+- **Our earlier ocean reconstruction study**,
+  [Monkman et al. (2026)](https://doi.org/10.22541/essoar.15003398/v3),
+  evaluates separate, independent models for SSH and SST and explains the
+  posterior-sampling algorithm for an oceanographic audience. The work
+  presented in this repository builds on that study with several upgrades
+  and improvements, including joint SSH/SST modeling; the joint model was
+  not evaluated in the paper.
+
+### Source projects
 
 This repository was extracted from two research codebases. The network and
 training data pipeline come from `cBottle-for-ocean-DA/ocean-examples`. The
@@ -516,7 +685,16 @@ released checkpoints were trained in cBottle-for-ocean-DA. The OSSE tiles are
 the three Atlantic test cases used there. The windowed (multi-tile) SDA used
 for full 336×336 tiles is not included.
 
-## Licenses
+## Contributors
+
+- **Tatsu Monkman** — research, model development, and repository direction.
+- **Claude (Anthropic)** — AI coding contributor, assisting with code and documentation.
+- **Codex (OpenAI)** — AI coding contributor, assisting with code and documentation.
+
+Contributions are welcome, including bug reports, documentation corrections,
+validation studies, and code improvements. Please open an issue or pull request.
+
+## License
 
 Apache-2.0 (`LICENSE.txt`), except the vendored azula subset
 (`src/obottle_starter/inference/sda/_azula/`, MIT). See `THIRD_PARTY_LICENSES.md`.

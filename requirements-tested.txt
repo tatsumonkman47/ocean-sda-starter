@@ -1,5 +1,5 @@
-# Exact versions with which `python -m pytest` (111 passed, 2 skipped on CPU;
-# the 2 checkpoint tests also pass with OBOTTLE_CHECKPOINTS set) and all four
+# Exact versions with which `python -m pytest` (133 passed, 2 skipped on CPU;
+# the 2 checkpoint tests also pass with OBOTTLE_CHECKPOINTS set) and all five
 # notebooks in examples/ last ran without errors: 2026-10-26, Python 3.13.5,
 # Linux x86_64, NVIDIA L40S. The torch wheel bundles CUDA 13.0 (nvidia-*
 # packages below), so this file is for Linux x86_64 with a recent NVIDIA driver.

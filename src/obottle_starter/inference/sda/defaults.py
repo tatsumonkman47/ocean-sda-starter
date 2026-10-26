@@ -25,8 +25,9 @@ class SamplerDefaults:
     timestep_spacing: str = "log_sigma"
     mmps_solver: str = "gmres"
     mmps_iterations: int = 4
-    rozet_gamma: float = 0.01
+    rozet_gamma: float = 0.1
     cfg_weight: float = 1.5
+    window_step: int = 1
 
 
 DEFAULTS = SamplerDefaults()

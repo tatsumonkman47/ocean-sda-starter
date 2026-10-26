@@ -175,6 +175,7 @@ def test_sda_yaml_matches_python_defaults():
         "mmps_iterations": cfg.mmps.iterations,
         "rozet_gamma": cfg.rozet.gamma,
         "cfg_weight": cfg.classifier_free.weight,
+        "window_step": cfg.sliding.step,
     }
     assert got == expected
 
@@ -190,6 +191,18 @@ def test_validate_sda(tiny_cfg):
         )
     with pytest.raises(ConfigError, match="observations.mode"):
         validate_sda(OmegaConf.merge(cfg, {"observations": {"mode": "real"}}), tiny_cfg)
+    # tiny_cfg has 3-frame windows
+    validate_sda(OmegaConf.merge(cfg, {"sliding": {"frames": 9, "step": 3}}), tiny_cfg)
+    with pytest.raises(ConfigError, match="use 7 or 9"):
+        validate_sda(
+            OmegaConf.merge(cfg, {"sliding": {"frames": 8, "step": 2}}), tiny_cfg
+        )
+    with pytest.raises(ConfigError, match="sliding.step"):
+        validate_sda(
+            OmegaConf.merge(cfg, {"sliding": {"frames": 9, "step": 4}}), tiny_cfg
+        )
+    with pytest.raises(ConfigError, match="sliding.frames"):
+        validate_sda(OmegaConf.merge(cfg, {"sliding": {"frames": 2}}), tiny_cfg)
 
 
 # ── How a run starts ──────────────────────────────────────────────────────

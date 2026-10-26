@@ -852,6 +852,38 @@ def validate_sda(cfg, model_cfg) -> None:
             "never saw the null condition, so CFG's unconditional branch is "
             "untrained",
         )
+
+    sliding = cfg.get("sliding") or {}
+    T = int(model_cfg.time_length)
+    frames, step = sliding.get("frames"), sliding.get("step")
+    errors.check(
+        frames is None or (_is_int(frames) and frames >= T),
+        f"sliding.frames must be null or at least the model's {T} frames; "
+        f"got {frames!r}",
+    )
+    errors.check(
+        _is_int(step) and 1 <= step <= T,
+        f"sliding.step must be an integer from 1 to the model's {T} frames; "
+        f"got {step!r}",
+    )
+    batch = sliding.get("window_batch")
+    errors.check(
+        batch is None or (_is_int(batch) and batch >= 1),
+        f"sliding.window_batch must be null or an integer >= 1; got {batch!r}",
+    )
+    if _is_int(frames) and frames > T:
+        if _is_int(step) and 1 <= step <= T and (frames - T) % step:
+            shorter = frames - (frames - T) % step
+            errors.check(
+                False,
+                f"sliding.frames={frames} cannot be covered by windows of {T} "
+                f"frames starting every {step}: use {shorter} or {shorter + step}",
+            )
+        errors.check(
+            not conditional,
+            "sliding.frames > the model's window needs an unconditional prior; "
+            "this checkpoint is a conditional model",
+        )
     errors.raise_if_any("SDA config")
 
 

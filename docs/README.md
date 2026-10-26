@@ -1,29 +1,44 @@
 # Background documentation
 
-These pages explain the ideas behind the code: what the network is, how it
-is trained, where its data come from, and how data assimilation uses it.
-They assume you know some Python and some ocean dynamics, but not diffusion
-models.
+These pages explain how the examples work and what you would need to change
+for your own application. The aim is to connect the mathematics to practical
+choices: what the model learns, how we prepare its training data, and how
+observations steer a reconstruction.
+
+You do not need prior experience with diffusion models. Some familiarity
+with probability, linear algebra, and Python will help; the ocean examples
+provide the physical context.
 
 | Page | Read it to learn |
 |---|---|
 | [1. The network](01_network_architecture.md) | What a diffusion model is, the U-Net inside it, and how it handles time |
 | [2. Training](02_training.md) | The training objective, the noise schedule, and the settings in `configs/train_base.yaml` |
-| [3. Data loading](03_data_loading.md) | How training samples are cut from llc4320: the tile method used here and the native-grid method used in newer work |
-| [4. Inference with SDA](04_inference_sda.md) | How observations steer the model, what MMPS does, and when to use GMRES, CG or Rozet & Louppe's (2023) heuristic |
-| [5. Extensions](05_extensions.md) | Options that are off, untested or not yet implemented, with what is known about each |
-| [6. Conditional models](06_conditional_models.md) | Feeding observations to the network as inputs (M_3, M_4): experimental options to train and sample them |
-| [7. Literature](07_literature.md) | The papers behind the methods, with links and why each matters here |
+| [3. Training data](03_data_loading.md) | Preparing local patches from llc4320 and selecting their frame times |
+| [4. Data assimilation](04_inference_sda.md) | Posterior sampling, covariance approximations, and numerical solvers |
+| [5. Extensions](05_extensions.md) | Available modifications, proposed experiments, and their validation status |
+| [6. Conditional models](06_conditional_models.md) | Training models that take observations as inputs, with optional classifier-free guidance |
+| [7. References](07_literature.md) | Papers grouped by topic, with their contributions and connections to the code |
+| [8. Sliding windows](08_windowed_sda.md) | Reconstructing longer time sequences with a model trained on short windows |
 
-The README in the repository root covers installation and commands.
+The [main README](../README.md) covers installation and commands.
 
 ## Reading order
 
-New to diffusion models? Read pages 1, 2 and 4 in order. To run the
-pretrained models, page 4 is enough. To train your own, read pages 2 and 3.
-Page 7 lists the papers; the key references below are the shortest path.
+You can read the guide in order, or start with the task you have in mind:
 
-## A short glossary
+- **Understand diffusion models:** start with [the network](01_network_architecture.md),
+  then [training](02_training.md) and [data assimilation](04_inference_sda.md).
+- **Use the released models:** start with [data assimilation](04_inference_sda.md).
+  For longer time series, continue to [sliding windows](08_windowed_sda.md).
+- **Train on your own fields:** read [training](02_training.md) and
+  [data preparation](03_data_loading.md) together.
+- **Try a different method:** see [extensions](05_extensions.md) and
+  [conditional models](06_conditional_models.md).
+
+The [references](07_literature.md) explain where each method comes from.
+The notation below is shared across the guide.
+
+## Terminology
 
 | Term | Meaning here |
 |---|---|
@@ -31,19 +46,23 @@ Page 7 lists the papers; the key references below are the shortest path.
 | **Frame** | One snapshot in time. A sample is several frames of the same patch. |
 | **Patch / window** | The 128 × 128 grid the model sees. "Window" also includes its frames. |
 | **Variable** | One field the model represents, e.g. SSH or SST, listed in the config's `variables`. |
-| **Model units** | Data after normalization, of order one. See the root README, "Units and normalization". |
+| **Model units** | Data shifted and scaled to have typical magnitudes of order one. See the root README, [Units and scaling](../README.md#units-and-scaling). |
 | **Noise level σ** | The standard deviation of the Gaussian noise added to a sample, in model units. |
 | **Denoiser** | The network: given a noisy sample and σ, it estimates the clean sample (its conditional mean, approximately). |
 | **Prior** | The distribution of ocean states the model has learned. Sampling it without observations gives "prior samples". |
 | **Posterior** | The distribution of ocean states consistent with both the prior and the observations. SDA samples it. |
 | **OSSE** | Observing System Simulation Experiment: synthetic observations taken from a known simulated truth, so errors can be measured. |
+| **Embedding** | A numerical representation of an input such as noise level or frame time, supplied to network layers. |
+| **Guidance** | A correction to each sampling step that accounts for observations or changes the influence of conditioning inputs. |
+| **Checkpoint** | A saved model and its configuration; training checkpoints also store the state needed to resume a run. |
 | **EMA** | Exponential moving average of the weights during training; the saved weights used for sampling. |
 
 ## Notation
 
-The pages use one set of symbols. Physical time and diffusion "time" are
-easy to confuse in a model of trajectories, so frame times are `τ_i` and
-the diffusion noise level is `σ`.
+Physical time and diffusion noise level are distinct: `τ_i` denotes a
+frame timestamp and `σ` denotes the standard deviation of added noise.
+Some implementation descriptions use `x_t` for the noisy state `z_σ`;
+there, `t` indexes the diffusion process, not physical time.
 
 | Symbol | Meaning |
 |---|---|
@@ -54,8 +73,8 @@ the diffusion noise level is `σ`.
 | `ε ~ N(0, I)` | Standard Gaussian noise. |
 | `z_σ = x + σ ε` | Noisy normalized state (the code calls it `x_t`). |
 | `F_θ` | The raw U-Net (`SongUNet`). |
-| `D_θ` | The EDM-preconditioned denoiser built around it (`EDMPrecond`). |
-| `c` | Context the network sees besides `z_σ`: frame times, calendar, and, for conditional models, observation maps. |
+| `D_θ` | The denoiser obtained by scaling the U-Net inputs and outputs (`EDMPrecond`; page 1). |
+| `c` | Additional network inputs: frame times, calendar information, and, for conditional models, observation maps. |
 | `y = h(x) + e` | Observation model; `h` is linear here (`A x`), units are declared with it. |
 | `R` | Observation-error covariance, `diag(σ_y,j²)` for independent errors (`σ_y² I` when all are equal). |
 | `J_θ` | Jacobian `∂D_θ/∂z_σ` of the denoiser with respect to its noisy input. |
@@ -66,15 +85,26 @@ inside the network a frame's grid is flattened row by row to
 inside the network means a feature channel; the model's input and output
 channels are its variables.
 
-## Key references
+## Main references
 
-- Ho, Jain & Abbeel (2020), *Denoising Diffusion Probabilistic Models*. The modern starting point.
-- Song et al. (2021), *Score-Based Generative Modeling through Stochastic Differential Equations*. The continuous-noise view used here.
-- Song, Meng & Ermon (2021), *Denoising Diffusion Implicit Models* (DDIM). The sampler.
-- Karras et al. (2022), *Elucidating the Design Space of Diffusion-Based Generative Models* (EDM). The preconditioning and the SongUNet configuration.
-- Karras et al. (2024), *Analyzing and Improving the Training Dynamics of Diffusion Models* (EDM2). A newer network, see page 5.
-- Rozet & Louppe (2023), *Score-based Data Assimilation*. SDA and its covariance heuristic.
-- Rozet et al. (2024), *Learning Diffusion Priors from Observations by Expectation Maximization*. Moment Matching Posterior Sampling (MMPS), used here.
-- Chung et al. (2023), *Diffusion Posterior Sampling for General Noisy Inverse Problems* (DPS). The simplest guidance method; a useful contrast.
+- Ho, Jain & Abbeel (2020), *Denoising Diffusion Probabilistic Models*. The
+  modern starting point.
+- Song et al. (2021), *Score-Based Generative Modeling through Stochastic
+  Differential Equations*. The continuous-noise view used here.
+- Song, Meng & Ermon (2021), *Denoising Diffusion Implicit Models* (DDIM). The
+  sampler.
+- Karras et al. (2022), *Elucidating the Design Space of Diffusion-Based
+  Generative Models* (EDM). The preconditioning and the SongUNet
+  configuration.
+- Karras et al. (2024), *Analyzing and Improving the Training Dynamics of
+  Diffusion Models* (EDM2). A newer network, see page 5.
+- Rozet & Louppe (2023), *Score-based Data Assimilation*. SDA and its
+  covariance heuristic.
+- Rozet et al. (2024), *Learning Diffusion Priors from Observations by
+  Expectation Maximization*. Moment Matching Posterior Sampling (MMPS), used
+  here.
+- Chung et al. (2023), *Diffusion Posterior Sampling for General Noisy Inverse
+  Problems* (DPS). The simplest guidance method; a useful contrast.
 - Ronneberger, Fischer & Brox (2015), *U-Net*. The network shape.
-- Ho et al. (2022), *Video Diffusion Models*. Spatial layers plus temporal attention, the pattern used for frames here.
+- Ho et al. (2022), *Video Diffusion Models*. Spatial layers plus temporal
+  attention, the pattern used for frames here.

@@ -19,6 +19,14 @@ CFG (M_4)                  conditional and null branch   ``cfg``
 hybrid (unvalidated)       frame times and observations  ``mmps`` / ``rozet``
 =========================  ============================  ======================
 
+**Longer sequences.** Pass more frame times than the model's window
+(``cfg.time_length``) and the prior + SDA route assimilates the whole
+sequence at once with sliding windows (Rozet & Louppe, 2023; see
+:mod:`obottle_starter.inference.sda.windows`). ``window_step`` sets how far
+apart consecutive windows start: 1 (default) is Rozet & Louppe's
+construction, ``cfg.time_length`` splits the sequence into independent
+blocks.
+
 The hybrid route (a conditional model with ``mmps`` or ``rozet``) uses the
 same observations twice. A model that already approximates ``p(x | y)`` is
 not automatically improved by applying the likelihood of ``y`` again; it
@@ -44,11 +52,13 @@ from obottle_starter.core.obs_conditioning import (
     observed_names,
     prepend,
 )
+from obottle_starter.inference.sda.defaults import DEFAULTS
 from obottle_starter.inference.sda.inference import run_inference
 from obottle_starter.inference.sda.observations import (
     ObservationTerm,
     build_observation,
 )
+from obottle_starter.inference.sda.windows import sliding_windows
 
 
 def assimilate(
@@ -65,13 +75,17 @@ def assimilate(
     normalizer: Normalizer | None = None,
     obs_seed: int | None = 0,
     guidance: str = "mmps",
+    window_step: int = DEFAULTS.window_step,
     **sampler_kwargs,
 ) -> xr.Dataset:
-    """Sample the posterior for one window of ``cfg.time_length`` frames.
+    """Sample the posterior for a window of ``cfg.time_length`` frames or longer.
 
     Args:
         net, cfg: From :func:`obottle_starter.core.model.load_checkpoint`.
-        times: ``(T,)`` frame times.
+        times: ``(T,)`` frame times. ``T`` is the model's ``cfg.time_length``,
+            or more for a longer sequence assimilated with sliding windows
+            (unconditional priors; ``masks``, ``truth`` and ``y`` then have
+            ``T`` frames too).
         center_lon: Window-centre longitude, degrees east.
         masks: ``{channel: (T, H, W) bool}`` observed pixels. Channels left
             out, or ``None`` / all-false masks, are unobserved. With no
@@ -97,10 +111,14 @@ def assimilate(
             trained with ``null_probability > 0``). With a conditional model,
             ``mmps`` and ``rozet`` use both routes (unvalidated; see the
             module docstring). Ignored when nothing is observed.
+        window_step: Sequences longer than the model's window only: frames
+            between consecutive window starts, from 1 (Rozet & Louppe's
+            sliding windows) to ``cfg.time_length`` (independent blocks).
+            ``(T - cfg.time_length)`` must be a multiple of it.
         **sampler_kwargs: Passed to
             :func:`obottle_starter.inference.sda.inference.run_inference`
             (``n_members``, ``n_batch``, ``steps``, ``mmps_iterations``,
-            ``rozet_gamma``, ``seed``, ...). Defaults are
+            ``rozet_gamma``, ``window_batch``, ``seed``, ...). Defaults are
             :data:`obottle_starter.inference.sda.defaults.DEFAULTS`, the same
             as ``configs/sda.yaml``.
 
@@ -112,8 +130,10 @@ def assimilate(
     """
     names = channel_names(cfg)
     normalizer = normalizer or Normalizer.from_config(cfg)
-    T, H, W = cfg.time_length, cfg.H, cfg.W
+    H, W = cfg.H, cfg.W
     times = np.asarray(times, dtype="datetime64[ns]")
+    T = len(times)
+    windowed = T != cfg.time_length
     masks = {c: m for c, m in (masks or {}).items() if m is not None}
     unknown = set(masks) - set(names)
     if unknown:
@@ -129,6 +149,11 @@ def assimilate(
     terms = normalizer.observation_terms(masks)
     observed = [t.name for t in terms]
     conditional = is_conditional(cfg)
+    if windowed and conditional:
+        raise ValueError(
+            f"the model takes {cfg.time_length} frames; got {T}. Sliding windows "
+            "over longer sequences are implemented for unconditional priors only"
+        )
     if guidance not in ("mmps", "rozet", "conditional", "cfg"):
         raise ValueError(
             "guidance must be 'mmps', 'rozet', 'conditional' or 'cfg'; "
@@ -196,7 +221,11 @@ def assimilate(
         )
 
     device = next(net.parameters()).device
-    cond = frame_conditioning(times, center_lon, cfg, device)
+    if windowed:
+        # One conditioning per window, from its own frames.
+        cond = {"windows": sliding_windows(times, center_lon, cfg, window_step, device)}
+    else:
+        cond = frame_conditioning(times, center_lon, cfg, device)
     # Observed values as model-unit fields (NaN where unobserved): recorded in
     # the output, and the network's inputs for a conditional model.
     obs_field = torch.full((len(names), T, H * W), float("nan"))

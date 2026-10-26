@@ -37,8 +37,12 @@ Choosing ``γ``. For unit-weight observations in model units, MMPS's
 denoiser's Jacobian is near the identity) and close to ``σ_data² I`` at
 large ``σ_t``. So ``γ = 1`` matches MMPS at the end of sampling and makes
 guidance weaker than MMPS early on; smaller ``γ`` strengthens guidance at
-every step. Rozet & Louppe's code uses ``γ = 1e-2``. The likelihood
-variance is that of ``y``, so ``γ`` assumes observations in model units
+every step. Rozet & Louppe's code uses ``γ = 1e-2``, together with Langevin
+corrector steps after each sampler step. On the plain DDIM sampler here,
+without correctors, ``γ = 1e-2`` diverged for the released joint SSH + SST
+model even on a single window, while ``γ = 0.1`` was stable, so the default
+here is 0.1 (``docs/04_inference_sda.md``). It is a tuning parameter. The
+likelihood variance is that of ``y``, so ``γ`` assumes observations in model units
 (rows of ``A`` of order one), as :func:`obottle_starter.assimilate` builds
 them.
 
@@ -87,7 +91,7 @@ class RozetDenoiser(Denoiser):
         A: Callable[[Tensor], Tensor],
         cov_y: Tensor,
         *,
-        gamma: float = 1e-2,
+        gamma: float = 0.1,
         record_diagnostics: bool = False,
         obs_groups: Tensor | None = None,
         group_names: Sequence[str] | None = None,

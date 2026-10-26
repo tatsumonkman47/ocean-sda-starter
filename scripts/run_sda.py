@@ -5,6 +5,9 @@
     python scripts/run_sda.py ckpt=checkpoints/joint_ssh_sst_T5.pt \
         tile=osse_tiles/MidAtlantic_35N_50W.nc output=mid_atlantic.nc
 
+With sliding.frames larger than the model's window, the whole sequence is
+assimilated at once with sliding windows (docs/08_windowed_sda.md).
+
 The truth comes from the tile's simulation. With observations.mode=instrument
 (default) the coverage is real SWOT+nadir and ACSPO footprints, but the
 observed values are still taken from the simulated truth: this is an OSSE,
@@ -43,10 +46,11 @@ def main() -> None:
         f"{model_cfg.H}x{model_cfg.W}, device {device}"
     )
 
+    n_frames = cfg.sliding.frames or model_cfg.time_length
     win = load_window(
         cfg.tile,
         names,
-        model_cfg.time_length,
+        n_frames,
         t_start=cfg.window.t_start,
         stride=cfg.window.stride,
         size=model_cfg.H,
@@ -95,6 +99,8 @@ def main() -> None:
         mmps_iterations=cfg.mmps.iterations,
         rozet_gamma=cfg.rozet.gamma,
         cfg_weight=cfg.classifier_free.weight,
+        window_step=cfg.sliding.step,
+        window_batch=cfg.sliding.window_batch,
     )
     ds = ds.assign_coords(
         latitude=(("row", "col"), win.latitude),

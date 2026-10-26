@@ -1,26 +1,53 @@
 # 1. The network
 
+The network has one immediate task: estimate a clean ocean field from a noisy
+one. Training it to do this over many noise levels gives us a way to generate
+new fields and, later, steer them toward observations. This page explains
+that connection before looking inside the network.
+
 ## What a diffusion model learns
 
-Suppose you have many example ocean states `x` (a few frames of SSH and SST
-on a 128 × 128 patch). A diffusion model learns to produce new, realistic
-states that look like they came from the same distribution.
+A diffusion model learns a distribution of ocean states `x`, each containing
+several frames of SSH and SST on a 128 × 128 grid. It learns by denoising:
+add Gaussian noise, `z_σ = x + σ ε` with `ε ~ N(0, I)`, and train a network
+`D_θ(z_σ, σ)` to estimate the clean state. Once trained over a wide range
+of noise levels, the model generates new states by starting from noise and
+repeatedly denoising as `σ` decreases toward zero.
 
-It does this indirectly. Take a real sample `x`, add Gaussian noise,
-`z_σ = x + σ ε` with `ε ~ N(0, I)`, and train a network `D_θ(z_σ, σ)` to
-recover the clean sample. This is the **denoiser**. Once it works for every
-σ from tiny to huge, you can generate a sample: start from pure noise (very
-large σ) and repeatedly denoise a little, lowering σ step by step until it
-is near zero.
+The noise level controls the signal-to-noise ratio. Features with
+amplitudes below `σ` are difficult to recover. Since large spatial scales
+usually contain more variance in ocean fields, they often emerge earlier
+in sampling than fine-scale features. This relationship depends on the
+data spectrum; diffusion noise level is not a spatial wavelength.
 
-σ sets the signal-to-noise ratio. A useful intuition is that large σ
-settles the large-scale structure and small σ the fine detail: noise of a
-given σ hides the features whose amplitude is below σ, and in ocean fields
-the large scales usually carry the most variance. How σ relates to
-wavelength therefore depends on the data's spectrum; it is not a fixed
-ordering by scale.
+The animation shows the distinction between the **current noisy state**
+(top) and the **estimated clean field** (bottom). As the noise level falls,
+the two approach one another. These are steps in generation, not snapshots
+of an ocean field evolving in physical time.
 
-Three facts make this useful for data assimilation (page 4):
+<p align="center">
+  <img src="../examples/figures/b_unconditional.gif" alt="Prior sampling: the noisy state and clean-field estimate evolve as the diffusion noise level decreases">
+  <br>
+  <em>Sampling without observations. This illustration uses a Gaussian random field with an SSH-like spectrum and a closed-form denoiser, rather than the trained ocean network.</em>
+</p>
+
+<details>
+<summary>View still frames</summary>
+
+<p align="center">
+  <img src="../examples/figures/b_unconditional_strip.png" alt="Six stages of prior sampling, showing noisy states above clean-field estimates">
+  <br>
+  <em>Selected steps from the animation, arranged from high to low noise.</em>
+</p>
+
+</details>
+
+### From a denoiser to a probability distribution
+
+A single denoised estimate is a conditional mean, not a new random sample.
+Sampling requires a sequence of denoising steps, beginning from a random
+state. Three results explain why the same network can support both
+sampling and data assimilation:
 
 1. The training loss is a squared error, so the best possible denoiser (the
    population optimum, with unlimited data and capacity) is the
@@ -28,20 +55,20 @@ Three facts make this useful for data assimilation (page 4):
    `D(z_σ, σ) = E[x | z_σ]`. A trained network approximates it.
 2. **Tweedie's identity** links that conditional mean to the gradient of
    the log-density of noisy states (the "score"):
-   `∇ log p(z_σ) = (E[x | z_σ] − z_σ) / σ²`. Replacing the mean by
-   `D_θ` gives the learned score, which is what lets us steer sampling
-   towards observations.
+   `∇ log p(z_σ) = (E[x | z_σ] − z_σ) / σ²`. The score points toward increasing probability density at the current
+   noise level. Replacing the conditional mean by `D_θ` gives the score
+   approximation used in sampling.
 3. For the exact conditional mean, its Jacobian gives the uncertainty of
    that estimate: `Cov[x | z_σ] = σ² ∂E[x | z_σ]/∂z_σ`. With a learned
    denoiser this is an approximation (the learned Jacobian need not even be
-   symmetric). MMPS uses it.
+   symmetric). MMPS uses this relation to estimate how much uncertainty
+   remains after denoising.
 
-## EDM preconditioning: keeping numbers of order one
+## Scaling the network inputs and outputs (EDM preconditioning)
 
-Inputs at σ = 200 are huge and inputs at σ = 0.0002 are almost clean, so the
-raw network would see wildly different magnitudes. Karras et al. (2022)
-wrap the network `F` in fixed scalings that keep its inputs and targets near
-unit size:
+The input magnitude varies greatly between `σ = 200` and `σ = 0.0002`.
+EDM preconditioning (Karras et al., 2022) uses fixed scaling factors around
+the U-Net `F_θ` to keep its inputs and training targets near unit magnitude:
 
 ```
 D_θ(z, σ, c) = c_skip(σ) · z  +  c_out(σ) · F_θ( [c_in(σ) · z, c_maps],  c_noise(σ),  c_rest )
@@ -52,6 +79,10 @@ c_out  = σ · σ_data / sqrt(σ² + σ_data²)
 c_noise = ln(σ) / 4
 ```
 
+**How to read the formula.** `c_in` scales the noisy input, `c_skip`
+retains part of it, and `c_out` scales the network correction. `c_noise`
+encodes the noise level supplied to the network.
+
 Only the noisy state is scaled by `c_in`. The context maps (`c_maps`: the
 frame-offset encodings and, for a conditional model, observation maps) are
 concatenated to it unscaled, and the rest of the context (`c_rest`: frame
@@ -60,12 +91,16 @@ offsets, calendar, labels) enters through embeddings, as `c_noise` does.
 `σ_data` is the typical standard deviation of the (normalized) data, 1.0
 for the released models. At small σ, `c_skip ≈ 1`: the input is nearly
 clean, so `D` mostly passes it through and `F` predicts a small correction.
-At large σ, `c_skip ≈ 0`: `F` must predict the clean field itself. This
-wrapper is `EDMPrecond` in `src/obottle_starter/core/nn/networks.py`.
+At large σ, `c_skip ≈ 0`: the scaled output of `F` supplies the clean-field
+estimate. The implementation is `EDMPrecond` in
+`src/obottle_starter/core/nn/networks.py`.
 
 ## The U-Net (`SongUNet`)
 
-`F` is a U-Net, named for its shape:
+The U-Net processes the field at several resolutions. Coarse levels can
+represent broad structures, while fine levels retain local detail. The
+encoder reduces the grid size; the decoder brings it back to the original
+resolution. Together they give the network its U shape:
 
 ```
 128x128 ─ blocks ────────────────────────────── blocks ─ 128x128   (96 channels)
@@ -81,13 +116,15 @@ wrapper is `EDMPrecond` in `src/obottle_starter/core/nn/networks.py`.
   channels, so deep layers see large areas with many features. The
   **decoder** (right) builds the grid back up.
 - **Skip connections** (horizontal lines) pass encoder features directly to
-  the decoder at the same size, so fine detail does not have to survive the
-  trip through 16 × 16.
-- Each level has `num_blocks` **residual blocks**: convolution, GroupNorm
-  and SiLU activation, added back onto the block's input.
-- **Spatial self-attention** at 16 × 16 (`attn_resolutions`) lets every
-  point compare itself with every other point on the patch, which
-  convolutions (3 × 3 neighbourhoods) cannot do in one step.
+  the decoder at the same size, preserving fine detail that may be lost
+  at the coarsest resolution.
+- Each level has `num_blocks` **residual blocks**. These learn a correction
+  to their input using convolutions, group normalization (GroupNorm), and
+  a nonlinear activation (SiLU). Adding the input back lets a block retain
+  features as well as modify them.
+- **Spatial self-attention** at 16 × 16 (`attn_resolutions`) couples every
+  grid point to every other point. A single 3 × 3 convolution couples
+  only neighbouring points.
 
 In the config these are `model_channels` (96), `channel_mult` ([1, 2, 2, 2]),
 `num_blocks` (2) and `attn_resolutions` ([16]). Patches must be square and
@@ -98,27 +135,31 @@ the resulting levels, widths and attention placement. With these the released
 models have 23.7 million parameters. "SongUNet" refers to Song et al.
 (2021)'s DDPM++ architecture, as configured in EDM.
 
-## How the network handles several frames
+## Spatial and temporal coupling
 
-A sample is a short movie of `time_length` frames (5 or 11). The network
-sees all frames at once, as a tensor of shape `(batch, channels, frames,
-pixels)`.
+Each sample contains `time_length` frames (5 or 11 in the released models).
+The network processes them together in an array of shape
+`(batch, channels, frames, pixels)`.
 
 - **Convolutions and spatial attention act on each frame separately**
-  (`mixing_type: spatial`). On their own they could not relate one frame
-  to another.
+  (`mixing_type: spatial`). On their own they could not relate one frame to
+  another.
 - **Temporal attention** (at 32 × 32 and 16 × 16, `temporal_attn_resolutions`,
-  plus the bottom and upsampling blocks of the decoder) lets each grid
-  point look at its own value in all the other frames. This is how the
-  model learns that an eddy at frame 1 should have moved a little by
-  frame 2. The pattern, spatial layers plus temporal attention, follows
-  Ho et al. (2022).
+  plus the bottom and upsampling blocks of the decoder) couples features at
+  each grid point across frames. Combined with spatial layers, this allows the
+  model to represent evolving structures such as moving eddies. The pattern,
+  spatial layers plus temporal attention, follows Ho et al. (2022).
 
-### Telling the network when the frames are
+### Representing frame times
 
-Frames may be 1 hour or 10 days apart, and the network needs to know which.
-The released models get the frame times in four ways (all set up by
-`src/obottle_starter/core/conditioning.py`):
+A sequence of five frames does not by itself specify how much time has
+passed. An eddy moving between hourly frames represents a different rate
+of evolution from the same displacement over ten days. We therefore pass
+frame timestamps to the model as additional inputs.
+
+Frame intervals may range from hours to days. The released models
+represent this timing through four mechanisms, configured by
+`src/obottle_starter/core/conditioning.py`:
 
 | Mechanism | Config key | What it gives the network |
 |---|---|---|
@@ -130,30 +171,32 @@ The released models get the frame times in four ways (all set up by
 The time of day is local to the patch: UTC time plus longitude × 4 minutes
 per degree. This is why `assimilate` needs `center_lon`.
 
-The four routes have different purposes, but whether all four are needed
-has not been tested: no matched comparison (same data, seeds, compute and
-evaluation, one route switched off at a time) exists. It is a good student
-experiment; judge it on SDA error at several frame spacings and on temporal
-correlations of prior samples, not on one training-loss curve.
+These mechanisms serve different purposes, but their individual
+contributions have not been isolated in controlled comparisons. To test
+one, train otherwise identical models with it enabled and disabled, then
+compare SDA errors across frame spacings and temporal correlations in
+prior samples. Training loss alone is insufficient.
 
-### What "per-frame AdaGN" actually does in these models
+### Frame-dependent adjustments within the network (AdaGN)
 
-Every residual block receives an embedding vector. Normally this carries
-only the noise level σ. With `use_per_frame_adagn`, a vector computed from
-each frame's time offset is added to it, so the embedding differs between
-frames. The block then turns the embedding into one number per feature
-channel (per frame) and **adds it to the features before the second
-GroupNorm**. (This is EDM's SongUNet design: `adaptive_scale` off. The
-name "AdaGN", adaptive group normalization, usually means a scale *and*
-shift applied after normalization; that variant is available for new models
-as `per_frame_adaptive_scale: true`, but the released models do not use it
-and it changes parameter shapes. See page 5.)
+Each residual block receives a vector representing the noise level. With
+`use_per_frame_adagn`, a learned representation of each frame's time offset
+is added to that vector. The block converts the result into an additive
+adjustment for each feature channel, applied **before the second group
+normalization (GroupNorm)**.
 
-The new projection is initialized to zero, so a model starts training as if
-the option were off. Whether it helps has not been tested by a matched
-comparison; page 5 discusses this.
+The configuration calls this AdaGN (adaptive group normalization), but the
+released models use EDM's additive variant, with `adaptive_scale` disabled.
+AdaGN more commonly means applying both a scale and a shift *after*
+normalization. That variant is available through
+`per_frame_adaptive_scale: true`; it changes parameter shapes and therefore
+requires a new model. See page 5.
 
-## Other inputs that are present but inactive
+The projection from frame-time embeddings is initialized to zero, so this
+adjustment initially has no effect. Page 5 describes comparisons that
+could establish its contribution.
+
+## Unused inputs in the released models
 
 - `label_dim: 8`. There is a slot for a global label vector, but the code
   always passes zeros, so it acts as a learned constant. It is kept because
@@ -163,7 +206,7 @@ comparison; page 5 discusses this.
   `conditioning` section can add observation inputs for new models; see
   [page 6](06_conditional_models.md).
 
-## Where to look in the code
+## Code reference
 
 | What | Where |
 |---|---|

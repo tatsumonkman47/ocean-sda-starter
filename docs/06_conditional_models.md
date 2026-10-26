@@ -1,14 +1,18 @@
 # 6. Conditional models (experimental)
 
-> **Status:** implemented and smoke-tested (the code builds, trains, loads
-> and samples), but no conditional model has been trained on real data or
-> evaluated. Treat this page as a starting point for exploration.
+> **Status:** basic checks cover model construction, training, loading, and
+> sampling. No conditional model has yet been trained on real data or
+> evaluated for reconstruction quality in this repository.
 
 ## Two ways to use observations
 
-The released models are **unconditional priors**: they learn what the
-ocean looks like, never see observations, and data assimilation (page 4)
-brings the observations in at inference. A **conditional model** instead
+So far, we have trained a model on complete fields and supplied observations
+only when reconstructing a field. Here we make a different choice: supply
+observations during training too, so the network learns how to use them.
+
+The released models are **unconditional priors**: they learn a distribution of ocean
+states without observation inputs. Data assimilation (page 4) introduces
+observations during sampling. A **conditional model** instead
 takes the observations as extra input channels and learns to approximate
 `p(state | observations)` directly.
 
@@ -20,6 +24,30 @@ takes the observations as extra input channels and learns to approximate
 | Training data | states only | states plus simulated observations of them |
 | Main risk | guidance not propagating information well | training observations unlike the real ones |
 
+### Where observations enter
+
+```mermaid
+flowchart TB
+    subgraph SDA["Prior with observation guidance"]
+        A["Noisy field and frame times"] --> B["Prior denoiser"]
+        B --> C["Clean-field estimate"]
+        C --> D["Likelihood guidance: MMPS or Rozet"]
+        O["Observations and error model"] --> D
+        D --> E["Next sampling step"]
+    end
+    subgraph COND["Conditional model"]
+        F["Noisy field and frame times"] --> G["Conditional denoiser"]
+        P["Observation values and optional masks"] --> G
+        G --> H["Conditional clean-field estimate"]
+        H --> I["Next sampling step"]
+    end
+```
+
+*In SDA, observations modify the denoiser's prediction through a likelihood
+update. In conditional sampling, observations are inputs to the network
+itself, during both training and reconstruction. CFG, described below,
+combines predictions with and without those observation inputs.*
+
 Suresh Babu, Sadam & Lermusiaux (2026) compared four approaches on
 quasi-geostrophic turbulence. They called the conditional model **M_3** and
 the conditional model with classifier-free guidance **M_4**. These had the
@@ -27,9 +55,9 @@ lowest errors in their tests; guidance with Diffusion Posterior Sampling
 (M_2) smoothed fine scales. They did not test MMPS, this repository's
 default. See [the literature page](07_literature.md).
 
-## How the inputs are built
+## Representing observations as network inputs
 
-For each channel in `conditioning.observe` the network gets:
+For each variable in `conditioning.observe`, the network receives:
 
 1. **Values:** the observed value in model units at observed cells, 0
    elsewhere.
@@ -39,17 +67,19 @@ All the value channels come first, then all the mask channels, then the
 usual frame-time encodings. Observations are per frame, so a swath that
 moves between frames is represented naturally.
 
-**Why a mask channel?** Without one, an unobserved cell (0) and an observed
-value of 0 look identical, and in model units values near 0 are common.
+**Why include a mask?** Suppose an unobserved cell is filled with zero.
+Without a separate mask, the network cannot tell that cell from a real
+observation whose normalized value is zero. A mask makes that distinction
+explicit.
 Suresh Babu et al. used no mask; it is optional here so you can compare.
 
-**The null condition** (all values and masks zero) means "nothing
-observed". A conditional model trained with some null conditions also
-works as an unconditional prior.
+**No-observation input (the null condition).** Setting all values and masks to
+zero indicates that no observations are available. A conditional model trained
+with some null conditions also works as an unconditional prior.
 
 ## Training a conditional model
 
-Set up in the `conditioning` section of `configs/train_base.yaml`;
+Configure observation inputs in `conditioning` in `configs/train_base.yaml`;
 `configs/train_conditional.yaml` is a ready-made example.
 
 ```yaml
@@ -68,10 +98,11 @@ conditioning:
     null_probability: 0.1     # > 0 trains the null branch CFG (M_4) needs
 ```
 
-`null_probability` (drop the whole *observation* condition) is unrelated
-to `label_dropout` (drop the unused global label vector, kept for the
-released checkpoints). Only `null_probability` trains the branch CFG uses;
-`guidance=cfg` refuses a model trained with `null_probability: 0`.
+`null_probability` controls how often all observation inputs are removed
+during training. It is independent of `label_dropout`, which applies to
+the unused global label vector retained for checkpoint compatibility.
+Only `null_probability` trains the no-observation prediction used by CFG;
+`guidance="cfg"` rejects a model trained with `null_probability: 0`.
 
 During training, each sample's target is observed through freshly drawn
 masks with Gaussian noise (`training/obs_simulation.py`), and the model
@@ -80,10 +111,11 @@ one sample in ten sees the null condition instead.
 
 **Start from a released prior.** `init_from=checkpoints/joint_ssh_sst_T5.pt`
 copies its weights and adds the new input channels with zero weights, so
-training begins from a model that ignores the observations and reproduces
-the prior exactly. The variables, their order and normalization, and the
-network must match the source's; the log lists what was copied and padded. This should need far fewer steps than training from
-scratch:
+training begins from a model that ignores the observations and reproduces the
+prior exactly. The variables, their order and normalization, and the network
+must match the source's; the log lists the copied and expanded parameters.
+Initializing this way may reduce the training required compared with random
+initialization:
 
 ```bash
 python scripts/train.py config=configs/train_conditional.yaml \
@@ -92,26 +124,27 @@ python scripts/train.py config=configs/train_conditional.yaml \
 
 ### Choosing the training observations
 
-This is the important decision: **the model learns the observing system it
-is trained on.**
+Think of the simulated observations as part of the training data, just as
+much as the clean ocean fields. A model trained on isolated points has not
+automatically learned how to use a wide swath or a large cloud gap.
 
-- `bernoulli` scatters isolated observed cells. Easy, but unlike any real
-  instrument.
-- `stripes` draws straight bands at random angles, a crude stand-in for
-  swaths (SWOT, nadir tracks) and for large cloud gaps in SST.
+- `bernoulli` scatters isolated observed cells. This is simple but does not represent
+  typical instrument coverage.
+- `stripes` draws straight bands at random angles, an approximation to
+  swaths (SWOT, nadir tracks) and large cloud gaps in SST.
 - To use real coverage (SWOT and nadir footprints, cloud masks), replace
   `simulate_masks` in `training/obs_simulation.py` with a sampler that
   draws masks from a library of real footprints. The OSSE tiles hold a few
-  examples; a real library would need many.
+  examples; a representative training library would require more.
 - Vary coverage and noise during training if you want a model that copes
   with a range of conditions. Values and masks alone do not tell the
   network how noisy an observation is: a model trained on a mixture of
-  noise levels learns their average, and gives no control over the assumed
-  uncertainty at inference. Supplying the noise level as another input
-  would; it is not implemented. Likewise, a coarse product interpolated to
+  noise levels must account for that mixture without an explicit noise
+  parameter at inference. An additional input could specify the noise
+  level explicitly; this is not implemented. Likewise, a coarse product interpolated to
   the fine grid is not a set of independent fine-grid observations.
-- Validate on observing systems the model was trained on *and* on shifted
-  ones (another mask family, other coverage).
+- Validate on observing systems the model was trained on and on different
+  observation patterns and coverage.
 
 ## Sampling
 
@@ -124,20 +157,20 @@ used:
 | `cfg` | Classifier-free guidance with weight `classifier_free.weight` (M_4) | conditional, trained with `null_probability > 0` |
 | `mmps`, `rozet` | Unconditional prior: guidance only. Conditional model: observations enter as inputs **and** through guidance (hybrid, unvalidated) | any |
 
-Classifier-free guidance (Ho & Salimans, 2022) runs the model twice per
-step, with and without the observations, and extrapolates:
-`x̂ = x̂_uncond + w (x̂_cond − x̂_uncond)`. `w = 1` is the plain conditional
-model; `w > 1` pushes harder towards the observations, often at the cost of
-ensemble spread.
+### What the classifier-free guidance weight does
 
-Combining a conditional model with MMPS or Rozet guidance is possible but
-unvalidated, and is not simply "extra consistency". A model that already
-approximates `p(x | y)` is not automatically improved by applying the
-likelihood of the same `y` again: the same evidence counts twice, which can
-over-concentrate the ensemble. The precise effect of this approximation
-needs analysis and experiments. Conditioning on one source and guiding with
-a *different*, independent source is a cleaner design. `assimilate` prints
-a note for the hybrid and records the route in the output.
+Classifier-free guidance (CFG; Ho & Salimans, 2022) compares two predictions
+from the same model: one with observations and one with those inputs set to
+zero. No separate classifier is needed. The combination is
+`x̂ = x̂_uncond + w (x̂_cond − x̂_uncond)`.
+
+- **`w = 0`:** use the prediction without observations.
+- **`w = 1`:** use the ordinary conditional prediction.
+- **`w > 1`:** extrapolate further in the direction associated with the
+  observations. This can strengthen conditioning but reduce ensemble spread.
+
+The weight is not an observation-error standard deviation. Check both
+reconstruction error and spread when choosing it.
 
 In Python:
 
@@ -151,47 +184,59 @@ The model only takes observations of the channels in its
 `conditioning.observe` list. Others are ignored by `conditional` and `cfg`
 (with a warning) but still used by `mmps` and `rozet`.
 
-## Try it: notebook 04
+### Combining conditioning with likelihood guidance
 
-`examples/04_conditional_and_cfg.ipynb` runs the whole route on the
-structured synthetic fields, without the data bundle: it trains a small
-conditional model that sees noisy bands of one variable, with
-`null_probability: 0.2` (`configs/train_structured_conditional.yaml`), then
-samples it with `guidance="conditional"` and with CFG at weights from 0
-(the null branch, i.e. the prior) to 4, and plots ensemble-mean error and
-spread inside and outside the observed bands, for the observed and the
-unobserved variable.
+Combining a conditional model with MMPS or Rozet guidance is implemented
+but unvalidated. If the model already approximates `p(x | y)`, applying
+the likelihood of the same `y` again counts the evidence twice and may
+produce an ensemble with too little spread. The effect requires analysis
+and experiments.
 
-## What you can change without new code, and what needs code
+Using one source as a network input and a different source for guidance
+can be appropriate when the sources are conditionally independent given
+the state. `assimilate` reports combined use of conditioning and guidance
+and records the method in the output's `route` attribute.
 
-Supported by configuration alone: which variables are observed
-(`observe`), the mask family, coverage and noise of the training
-observations, the mask channel, `null_probability`, starting from an
-unconditional checkpoint (`init_from`), and the guidance route and weight
-at sampling. All of these are **observation maps of model variables**:
-values and masks on the model grid.
+## Worked example: notebook 04
 
-Anything else the network should see needs code. Two common cases:
+`examples/04_conditional_and_cfg.ipynb` trains and evaluates a small model
+on generated fields; no model or data download is required. It uses noisy
+bands of observations from one variable and `null_probability: 0.2`
+(`configs/train_structured_conditional.yaml`).
+
+The notebook compares conditional sampling with CFG weights from 0
+(no-observation prediction) to 4. It plots ensemble-mean error and spread
+inside and outside the observed bands, for both variables.
+
+## Configuration changes and code extensions
+
+**Configuration is enough** to choose observed variables (`observe`),
+mask patterns, coverage, training noise, and `null_probability`. You can also
+enable a mask channel, initialize from a prior (`init_from`), and choose the
+sampling method and CFG weight. These options all use observations of model
+variables, represented as values and masks on the model grid.
+
+Additional types of input require code changes. Two examples:
 
 | Experiment | Files to change |
 |---|---|
-| Give the model the observation-noise level, so one model covers several noise levels and `sigma_y` means something at sampling | `training/obs_simulation.py` (`training_condition`: draw the noise level per sample, build its channel); `core/obs_conditioning.py` (`observation_channels`, `build_obs_condition`: one more channel); `inference/assimilate.py` (build the same channel from `sigma_y`) |
+| Give the model the observation-noise level, so sampling can use an explicit `sigma_y` across several noise levels | `training/obs_simulation.py` (`training_condition`: draw the noise level per sample, build its channel); `core/obs_conditioning.py` (`observation_channels`, `build_obs_condition`: one more channel); `inference/assimilate.py` (build the same channel from `sigma_y`) |
 | Other context: wind, a coarse product, a forcing field | `training/data.py` (the dataset returns it); `core/obs_conditioning.py` or a sibling module (turn it into input channels); `training/train.py` and `inference/assimilate.py` (pass it in, as the observation condition is) |
 
 In both cases the input layer grows, so start a new run (or use
 `init_from`, which pads new input channels with zeros), and add a test
 like those in `tests/test_conditional.py`.
 
-## Ideas to explore
+## Suggested experiments
 
 - Train M_3 and M_4 with `stripes`, compare them with MMPS on the OSSE
-  tiles, then test them on real masks they never saw.
+  tiles, then evaluate them on observation patterns excluded from training.
 - `mask_channel: true` against `false`.
 - Observing only SSH (`observe: [SSH]`) in a joint SSH + SST model, to
   learn SST reconstruction from SSH.
 - A library of real SWOT, nadir and cloud footprints for training masks.
 
-## Where to look in the code
+## Code reference
 
 | What | Where |
 |---|---|

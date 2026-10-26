@@ -17,6 +17,7 @@ from obottle_starter.inference.sda.denoiser import EDMPrecondDenoiser
 from obottle_starter.inference.sda.observations import ObservationSpec
 from obottle_starter.inference.sda.operators import as_covariance
 from obottle_starter.inference.sda.sampling import build_sampler
+from obottle_starter.inference.sda.windows import SlidingWindows, WindowedDenoiser
 
 
 def run_inference(
@@ -48,6 +49,8 @@ def run_inference(
     rozet_gamma: float = DEFAULTS.rozet_gamma,
     null_condition: Optional[Tensor] = None,
     cfg_weight: float = DEFAULTS.cfg_weight,
+    windows: Optional[SlidingWindows] = None,
+    window_batch: Optional[int] = None,
     channel_names: Optional[Sequence[str]] = None,
     time_slice: Optional[Sequence[int]] = None,
     seed: Optional[int] = None,
@@ -81,6 +84,13 @@ def run_inference(
         null_condition, cfg_weight: For ``method="cfg"``: the condition with
             the observation part zeroed, and the guidance weight ``w``; see
             :class:`obottle_starter.inference.sda.cfg.CFGDenoiser`.
+        windows: For a sequence longer than the model's window: the layout
+            and per-window conditioning from
+            :func:`obottle_starter.inference.sda.windows.sliding_windows`,
+            used instead of the per-tile conditioning above. Unconditional
+            priors only.
+        window_batch: Most windows per network call (sliding windows only);
+            see :class:`obottle_starter.inference.sda.windows.WindowedDenoiser`.
         channel_names: Labels for the ``channel`` coordinate.
         time_slice: Optional global frame indices, attached as ``time_i``.
         seed: Seed for the initial noise.
@@ -118,15 +128,27 @@ def run_inference(
         raise ValueError(f"channel_names length {len(channel_names)} != C={C}")
 
     schedule = VESchedule(sigma_min=sigma_min, sigma_max=sigma_max)
-    denoiser = EDMPrecondDenoiser(
-        net,
-        schedule,
-        condition=condition,
-        class_labels=class_labels,
-        second_of_day=second_of_day,
-        day_of_year=day_of_year,
-        time_offsets=time_offsets,
-    ).to(device)
+    if windows is not None:
+        if method in ("conditional", "cfg"):
+            raise ValueError(
+                "sliding windows are implemented for unconditional priors; "
+                f"method={method!r} needs a conditional model"
+            )
+        if windows.n_frames != T:
+            raise ValueError(
+                f"the windows cover {windows.n_frames} frames; the observations {T}"
+            )
+        denoiser = WindowedDenoiser(net, schedule, windows, window_batch).to(device)
+    else:
+        denoiser = EDMPrecondDenoiser(
+            net,
+            schedule,
+            condition=condition,
+            class_labels=class_labels,
+            second_of_day=second_of_day,
+            day_of_year=day_of_year,
+            time_offsets=time_offsets,
+        ).to(device)
     sigma_data = float(getattr(net, "sigma_data", 1.0))
     sampler_method = method
     if method in ("conditional", "cfg"):
@@ -155,6 +177,8 @@ def run_inference(
             f"run_inference: method={method}, n_members={n_members}, n_batch={n_batch}"
         )
         print(f"  C={C}, T={T}, H={H}, W={W} | observations: {sizes}")
+        if windows is not None:
+            print(f"  {windows.describe()}")
         print(
             f"  sigma range: [{sigma_min}, {sigma_max}] | steps={steps}, eta={eta}, "
             f"spacing={timestep_spacing}"
@@ -264,6 +288,12 @@ def run_inference(
         ds.attrs.update(rozet_gamma=float(rozet_gamma))
     elif method == "cfg":
         ds.attrs.update(cfg_weight=float(cfg_weight))
+    if windows is not None:
+        ds.attrs.update(
+            window_length=int(windows.window),
+            window_step=int(windows.step),
+            n_windows=int(windows.n_windows),
+        )
     if time_slice is not None and len(time_slice) == T:
         ds = ds.assign_coords(time_i=("time", np.asarray(time_slice)))
     return ds
